@@ -12,7 +12,7 @@ from telegram.ext import ContextTypes
 from db.memory import (
     save_message, get_history, clear_history, get_message_count,
     save_user, add_fact, search_facts, get_recent_facts,
-    save_pending_task, get_connection
+    save_pending_task, get_connection, save_feedback_event
 )
 from hardware.display import parse_and_execute_commands, error_screen, show_face
 from hardware.system import get_stats
@@ -28,6 +28,24 @@ from skills.loader import get_eligible_skills
 from config import LLM_PRESETS
 
 log = logging.getLogger(__name__)
+
+# Patterns that signal the user is unhappy with the bot's response
+_NEGATIVE_PATTERNS = (
+    "не то", "не так", "неправильно", "не работает", "переделай",
+    "попробуй снова", "опять не так", "снова не то", "всё неправильно",
+    "wrong", "not right", "doesn't work", "try again", "that's wrong",
+    "incorrect", "not what i", "no no", "nope",
+)
+
+
+def _is_negative_feedback(text: str) -> bool:
+    """Detect if user message signals dissatisfaction with bot's last response."""
+    t = text.lower().strip()
+    words = t.split()
+    # Short one-word negatives
+    if len(words) == 1 and words[0] in ("нет", "no", "нет.", "no.", "неправильно", "wrong"):
+        return True
+    return any(p in t for p in _NEGATIVE_PATTERNS)
 
 
 # --- Command Handlers ---
@@ -507,7 +525,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_message(conv_id, "user", f"[{sender}]: {user_text}")
     else:
         save_message(conv_id, "user", user_text)
-    
+
+    # Detect dissatisfaction — save for heartbeat reflection
+    if _is_negative_feedback(user_text):
+        try:
+            # Get last bot response as context
+            recent = get_history(conv_id, limit=4)
+            last_bot = next(
+                (m["content"] for m in reversed(recent) if m["role"] == "assistant"),
+                "",
+            )
+            save_feedback_event(conv_id, user_text, last_bot)
+            log.info(f"Feedback event saved: '{user_text[:50]}'")
+        except Exception as e:
+            log.warning(f"Failed to save feedback event: {e}")
+
     # Check if we should respond (in groups: only when mentioned/replied)
     if is_group:
         bot_username = context.bot.username

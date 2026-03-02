@@ -84,6 +84,18 @@ def init_db():
             read_at TEXT
         )
     """)
+
+    # Feedback events — negative signals from user (used in heartbeat)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS feedback_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER,
+            user_text TEXT,
+            bot_response_preview TEXT,
+            timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+            surfaced INTEGER DEFAULT 0
+        )
+    """)
     # Migration: brother bot or scripts may expect "sender" column (alias for from_bot)
     for table in ("bot_mail", "botmail"):
         try:
@@ -249,5 +261,47 @@ def delete_pending_task(task_id: int):
     """Delete a pending task."""
     conn = get_connection()
     conn.execute("DELETE FROM pending_tasks WHERE id = ?", (task_id,))
+    conn.commit()
+    conn.close()
+
+
+# --- Feedback Events ---
+
+def save_feedback_event(chat_id: int, user_text: str, bot_response_preview: str = ""):
+    """Save a negative feedback signal from the user."""
+    conn = get_connection()
+    conn.execute(
+        "INSERT INTO feedback_events (chat_id, user_text, bot_response_preview) VALUES (?, ?, ?)",
+        (chat_id, user_text[:300], bot_response_preview[:200]),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_unsurfaced_feedback(limit: int = 5) -> list[dict]:
+    """Get feedback events not yet shown in heartbeat."""
+    conn = get_connection()
+    rows = conn.execute(
+        "SELECT id, chat_id, user_text, bot_response_preview, timestamp "
+        "FROM feedback_events WHERE surfaced = 0 ORDER BY id ASC LIMIT ?",
+        (limit,),
+    ).fetchall()
+    conn.close()
+    return [
+        {"id": r[0], "chat_id": r[1], "user_text": r[2],
+         "bot_response": r[3], "timestamp": r[4]}
+        for r in rows
+    ]
+
+
+def mark_feedback_surfaced(ids: list[int]):
+    """Mark feedback events as seen by heartbeat."""
+    if not ids:
+        return
+    conn = get_connection()
+    placeholders = ",".join("?" * len(ids))
+    conn.execute(
+        f"UPDATE feedback_events SET surfaced = 1 WHERE id IN ({placeholders})", ids
+    )
     conn.commit()
     conn.close()

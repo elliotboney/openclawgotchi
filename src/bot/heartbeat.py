@@ -233,24 +233,40 @@ async def process_pending_tasks(context):
             delete_pending_task(task_id)
 
 
+def _extract_recent_reflection_snippets(n: int = 5) -> list[str]:
+    """Pull the last N heartbeat reflection snippets from daily logs."""
+    try:
+        from memory.flush import get_recent_daily_logs
+        logs = get_recent_daily_logs(days=3)
+        snippets = []
+        for line in logs.splitlines():
+            if "[Heartbeat Reflection]" in line:
+                text = line.split("[Heartbeat Reflection]")[-1].strip()
+                if text:
+                    snippets.append(text[:120])
+        return snippets[-n:]
+    except Exception:
+        return []
+
+
 async def send_heartbeat(context):
     """
     Periodic heartbeat: auto-mood, XP, mail check, reflect.
     Called every 4 hours.
     """
     run_hook(HookEvent(event_type="heartbeat", action="start"))
-    
+
     # 1. Apply auto-mood first
     mood, mood_text = apply_auto_mood()
-    
+
     # 2. Award heartbeat XP
     on_heartbeat()
     status_bar = get_status_bar()
     log.info(f"Heartbeat XP awarded. {status_bar}")
-    
+
     # 3. Process pending queue
     await process_pending_tasks(context)
-    
+
     # 4. Summarize recent conversations (LLM)
     try:
         from memory.flush import get_chats_with_recent_messages, summarize_and_save
@@ -263,6 +279,17 @@ async def send_heartbeat(context):
                     log.info(f"Saved summary for chat {chat_id}")
     except Exception as e:
         log.warning(f"Conversation summarization failed: {e}")
+
+    # 4b. Knowledge crystallization (autonomous — runs once per 24h)
+    crystallized_count = 0
+    try:
+        from memory.knowledge import crystallize_knowledge
+        from config import BOT_NAME, OWNER_NAME
+        crystallized_count = await crystallize_knowledge(BOT_NAME, OWNER_NAME or "the owner")
+        if crystallized_count:
+            log.info(f"Crystallized {crystallized_count} knowledge insights")
+    except Exception as e:
+        log.warning(f"Knowledge crystallization failed: {e}")
     
     # 5. Check for mail from brother
     unread_mail = get_unread_mail()
@@ -307,7 +334,7 @@ async def send_heartbeat(context):
     
     template = hb_path.read_text()
     
-    # 6. Load SOUL + IDENTITY for self-awareness during reflection
+    # 6. Load SOUL + IDENTITY + TRAITS for self-awareness during reflection
     soul_parts = []
     soul_path = WORKSPACE_DIR / "SOUL.md"
     if soul_path.exists():
@@ -315,6 +342,11 @@ async def send_heartbeat(context):
     identity_path = WORKSPACE_DIR / "IDENTITY.md"
     if identity_path.exists():
         soul_parts.append(identity_path.read_text())
+    traits_path = WORKSPACE_DIR / "TRAITS.md"
+    if traits_path.exists():
+        traits_text = traits_path.read_text().strip()
+        if traits_text:
+            soul_parts.append(f"## Your self-discoveries (TRAITS)\n{traits_text}")
     
     # 7. Build reflection prompt — focus on inner monologue, not stats
     from config import BOT_NAME
@@ -367,6 +399,41 @@ async def send_heartbeat(context):
 
     if context_parts:
         prompt += "\n\n## What I know right now\n" + "\n".join(f"- {p}" for p in context_parts)
+
+    # Synthesized knowledge from past experiences
+    try:
+        from memory.knowledge import get_knowledge_context
+        knowledge_ctx = get_knowledge_context()
+        if knowledge_ctx:
+            prompt += f"\n\n## What I've learned over time\n{knowledge_ctx}"
+    except Exception:
+        pass
+
+    # Unsurfaced feedback events — moments the user was unhappy
+    feedback_ids = []
+    try:
+        from db.memory import get_unsurfaced_feedback
+        feedback_events = get_unsurfaced_feedback(limit=3)
+        if feedback_events:
+            feedback_section = "\n## Times I failed or frustrated the owner\n"
+            for ev in feedback_events:
+                ts = ev["timestamp"][:10]
+                feedback_section += f"- [{ts}] Owner said: \"{ev['user_text'][:80]}\""
+                if ev["bot_response"]:
+                    feedback_section += f" (after I said: \"{ev['bot_response'][:60]}...\")"
+                feedback_section += "\n"
+            prompt += feedback_section
+            feedback_ids = [ev["id"] for ev in feedback_events]
+    except Exception as e:
+        log.warning(f"Could not load feedback events: {e}")
+
+    # Anti-cycling: show recent reflection snippets so bot doesn't repeat itself
+    recent_snippets = _extract_recent_reflection_snippets(n=4)
+    if recent_snippets:
+        prompt += "\n\n## Your recent thoughts (don't repeat these)\n"
+        for s in recent_snippets:
+            prompt += f"- \"{s}\"\n"
+        prompt += "\nThink about something DIFFERENT this time.\n"
 
     # Mail from brother (something to think/feel about)
     if mail_section:
@@ -435,6 +502,14 @@ async def send_heartbeat(context):
             except Exception as e:
                 log.error(f"Failed to send DM: {e}")
 
+        # Mark surfaced feedback events as seen
+        if feedback_ids:
+            try:
+                from db.memory import mark_feedback_surfaced
+                mark_feedback_surfaced(feedback_ids)
+            except Exception:
+                pass
+
         # Always send reflection to chat (owner by default)
         target_chat_id = _get_heartbeat_target_chat_id()
         if reflection_text and target_chat_id:
@@ -442,7 +517,17 @@ async def send_heartbeat(context):
                 await send_message(context.bot, target_chat_id, reflection_text)
             except Exception as e:
                 log.error(f"Failed to send reflection message: {e}")
-                
+
+        # TRAITS drift — autonomously add one self-discovery (once per 7 days)
+        try:
+            from memory.knowledge import update_traits
+            from config import BOT_NAME
+            added = await update_traits(BOT_NAME)
+            if added:
+                log.info("Added new trait to TRAITS.md")
+        except Exception as e:
+            log.warning(f"Trait update failed: {e}")
+
         run_hook(HookEvent(event_type="heartbeat", action="complete", text=response[:100]))
                 
     except Exception as e:
