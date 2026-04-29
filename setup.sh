@@ -85,6 +85,10 @@ else
     read -p "  Gemini API Key [skip]: " GEMINI_KEY
     if [ -n "$GEMINI_KEY" ]; then
         sed -i "s|GEMINI_API_KEY=.*|GEMINI_API_KEY=${GEMINI_KEY}|" "$ENV_FILE"
+        sed -i "s|DEFAULT_LITE_PRESET=.*|DEFAULT_LITE_PRESET=gemini|" "$ENV_FILE"
+        echo "  ✅ Lite preset set to gemini"
+    else
+        echo "  ℹ️  No Gemini key provided. The default Lite preset remains glm, which requires its own provider key in .env."
     fi
     
     echo ""
