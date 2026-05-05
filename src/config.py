@@ -51,7 +51,7 @@ LLM_PRESETS = {
         "api_base": GEMINI_API_BASE or None  # Use GEMINI_API_BASE from .env if set
     },
     "glm": {
-        "model": "anthropic/glm-4.7",
+        "model": "anthropic/glm-5.1",
         "api_base": "https://api.z.ai/api/anthropic"
     }
 }
