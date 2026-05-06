@@ -4,6 +4,9 @@ Telegram command and message handlers.
 
 import logging
 import re
+import os
+import tempfile
+from pathlib import Path
 
 from telegram import Update
 from telegram.constants import ChatAction
@@ -26,10 +29,32 @@ from memory.vault import classify_message_for_vault, get_vault_stats
 from memory.summarize import optimize_history
 from cron.scheduler import add_cron_job, list_cron_jobs, remove_cron_job
 from skills.loader import get_eligible_skills
-from config import LLM_PRESETS
+from config import LLM_PRESETS, OPENAI_API_KEY
 from llm.prompts import build_system_context, build_vault_context
 
 log = logging.getLogger(__name__)
+
+# --- Voice Handling Helpers ---
+
+async def transcribe_voice(file_path: str) -> str:
+    """Transcribe audio file using OpenAI Whisper."""
+    if not OPENAI_API_KEY:
+        return "Error: OPENAI_API_KEY not set in .env."
+    
+    try:
+        import openai
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        
+        with open(file_path, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1", 
+                file=audio_file,
+                response_format="text"
+            )
+        return str(transcript).strip()
+    except Exception as e:
+        log.error(f"Whisper transcription failed: {e}")
+        return f"Error: Transcription failed: {e}"
 
 # Patterns that signal the user is unhappy with the bot's response
 _NEGATIVE_PATTERNS = (
@@ -552,9 +577,60 @@ async def cmd_jobs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 
+# --- Voice Message Handler ---
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming voice messages."""
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    if not is_allowed(user.id, chat.id):
+        if chat.type == "private":
+            await update.message.reply_text("Access denied.")
+        return
+
+    # Show "recording" status while we process
+    await chat.send_action(ChatAction.RECORD_VOICE)
+    
+    try:
+        # Download voice file
+        voice = update.message.voice
+        file = await context.bot.get_file(voice.file_id)
+        
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+            await file.download_to_drive(tmp.name)
+            tmp_path = tmp.name
+        
+        # Transcribe
+        text = await transcribe_voice(tmp_path)
+        
+        # Cleanup
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+            
+        if text.startswith("Error:"):
+            await update.message.reply_text(text)
+            return
+
+        if not text:
+            await update.message.reply_text("I heard nothing. Try again?")
+            return
+
+        # Tell the user what we heard (briefly)
+        await update.message.reply_text(f"🎤 *I heard:* {text}", parse_mode="Markdown")
+        
+        # Pass transcribed text directly to handle_message
+        await handle_message(update, context, override_text=text)
+        
+    except Exception as e:
+        log.error(f"Voice handling failed: {e}")
+        await update.message.reply_text(f"Error processing voice: {e}")
+
+
 # --- Message Handler ---
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, override_text: str = None):
     """Handle incoming messages."""
     user = update.effective_user
     chat = update.effective_chat
@@ -565,7 +641,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Access denied.")
         return
     
-    user_text = update.message.text
+    user_text = override_text or update.message.text
     if not user_text:
         return
     

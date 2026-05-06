@@ -33,6 +33,7 @@ HISTORY_LIMIT = int(os.environ.get("HISTORY_LIMIT", "10"))
 # GEMINI_MODEL from .env takes priority, fallback to default
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini/gemini-1.5-flash")
 GEMINI_API_BASE = os.environ.get("GEMINI_API_BASE", "")  # Optional override for Z.ai/OpenAI
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 BOT_LANGUAGE = os.environ.get("BOT_LANGUAGE", "en")  # Default response language
 GROUP_CHAT_ID = int(os.environ.get("GROUP_CHAT_ID", "0"))  # Optional group for heartbeat
 ENABLE_LITELLM_TOOLS = _env_flag("ENABLE_LITELLM_TOOLS", True)
