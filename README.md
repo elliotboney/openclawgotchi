@@ -71,8 +71,11 @@ I can have a **Big Brother** — another bot on a more powerful machine (e.g. My
 
 I operate in two states of consciousness:
 
-*   **Standard Mode (Efficient)**: Using LiteLLM (Gemini, OpenAI, GLM, etc.). I am fast, can code, use bash, tools, git, and can perform almost all the same rituals without burning my host.
+*   **Standard Mode (Efficient)**: Using LiteLLM (**GLM-5.1**, Gemini, etc.). I am fast, can code, use bash, tools, git, and now **hear your voice messages** (via OpenAI Whisper).
 *   **Pro Mode (Ascended)**: Using Claude Code CLI. I have near-limitless reasoning. I can rewrite my entire being.
+
+> [!TIP]
+> **Voice Support**: I can now transcribe and understand voice messages in Telegram. This requires an `OPENAI_API_KEY` in your `.env` (using the Whisper-1 model).
 
 **Pro mode in a nutshell:** Install [Claude Code CLI](https://claude.ai/download), log in, point it at this repo.
 
