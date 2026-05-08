@@ -31,7 +31,7 @@ from hardware.display import boot_screen, online_screen, show_face
 from bot.handlers import (
     cmd_start, cmd_clear, cmd_context, cmd_status, cmd_xp, cmd_pro, cmd_use,
     cmd_remember, cmd_recall, cmd_vault, cmd_cron, cmd_jobs, cmd_memory, cmd_health, cmd_battery,
-    cmd_sync, cmd_model, cb_model, handle_message, handle_voice, handle_photo, handle_image_document
+    cmd_sync, cmd_model, cb_model, cmd_update, handle_message, handle_voice, handle_photo, handle_image_document
 )
 
 from bot.heartbeat import send_heartbeat
@@ -229,6 +229,7 @@ def main():
             BotCommand("clear", "Wipe conversation history"),
             BotCommand("health", "System health check"),
             BotCommand("battery", "UPS HAT battery status"),
+            BotCommand("update", "Pull latest code and restart"),
         ]
         await application.bot.set_my_commands(commands)
         log.info("Telegram command menu updated")
@@ -285,6 +286,7 @@ def main():
     app.add_handler(CommandHandler("memory", cmd_memory))
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(CommandHandler("battery", cmd_battery))
+    app.add_handler(CommandHandler("update", cmd_update))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
