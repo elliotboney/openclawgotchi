@@ -2,6 +2,25 @@
 
 All notable changes to the OpenClawGotchi project will be documented in this file.
 
+## [Unreleased] - 2026-05-09
+
+### Added
+- **OpenAI media pipeline**: Telegram now supports voice transcription with Whisper plus photo and image-document analysis with OpenAI Vision.
+- **Discord inbound adapter**: The bot can now run an optional Discord interface alongside Telegram for text, audio, and image attachments.
+- **Twitter writer skill**: New `twitter-writer` skill for X/Twitter drafts with 3 ready-to-post variants by default.
+- **Readable vault attachments**: Image attachments are now saved into the Obsidian-compatible vault with human-readable names instead of temp-file noise.
+- **Manual vault resync command**: `/syncvault` can trigger a local Syncthing rescan when `SYNCTHING_API_KEY` is configured.
+
+### Changed
+- **Vault structure for Obsidian**: New notes now use human-readable filenames without timestamp noise, `INDEX.md` no longer links to every note, and orphan notes no longer point to a fake `topics/inbox`.
+- **Attachment capture flow**: Vision analysis is now routed directly through OpenAI instead of the generic LiteLLM path.
+- **Setup flow**: `setup.sh` now installs Python dependencies from `requirements.txt`, offers optional OpenAI/Discord prompts, and documents optional transport and sync features more clearly.
+- **Runtime docs**: `README.md`, `.env.example`, Discord skill docs, and `BOT_INSTRUCTIONS.md` were updated to describe Telegram + Discord usage, media support, and the new twitter-writing behavior.
+
+### Fixed
+- **Auto-mood footer noise**: Removed duplicated live metrics from `auto_mood` footer text so the E-Ink header and footer do not drift out of sync.
+- **Release safety**: Removed hardcoded Syncthing credentials from the bot code and moved `/syncvault` configuration to environment variables.
+
 ## [Unreleased] - 2026-04-29
 
 ### Added

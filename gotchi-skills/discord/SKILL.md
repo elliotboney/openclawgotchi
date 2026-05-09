@@ -90,7 +90,35 @@ send_discord("Hello from Pi! 🤖")
 
 ---
 
-## Option 2: Full Bot (Advanced)
+## Option 2: Inbound Bot (Interactive)
+
+OpenClawGotchi can run a Discord inbound adapter alongside Telegram.
+
+### Setup
+1. Create app at https://discord.com/developers/applications
+2. Create Bot, copy token
+3. Enable "Message Content Intent" in Bot settings
+4. Invite bot to server with permissions to read/send messages
+5. Add to `.env`:
+   ```
+   DISCORD_BOT_TOKEN=your_bot_token
+   DISCORD_ALLOWED_CHANNELS=123456789
+   DISCORD_ALLOWED_USERS=
+   DISCORD_RESPOND_TO_ALL=0
+   DISCORD_MAX_ATTACHMENT_MB=15
+   ```
+
+### Behavior
+- DMs respond when `DISCORD_ALLOWED_USERS` is set for that user, or `ALLOW_ALL_USERS=1`.
+- Server channels must be listed in `DISCORD_ALLOWED_CHANNELS`.
+- In server channels, the bot responds when mentioned by default.
+- Set `DISCORD_RESPOND_TO_ALL=1` to answer every message in allowed channels.
+- Image attachments use OpenAI Vision and are saved to the vault.
+- Audio attachments use OpenAI Whisper and are passed through the normal LLM flow.
+
+---
+
+## Option 3: Simple Send Script (Advanced)
 
 Requires Discord bot token and `discord.py` library.
 
@@ -102,7 +130,7 @@ Requires Discord bot token and `discord.py` library.
 5. Add to `.env`:
    ```
    DISCORD_BOT_TOKEN=your_bot_token
-   DISCORD_CHANNEL_ID=123456789
+   DISCORD_ALLOWED_CHANNELS=123456789
    ```
 6. Install: `pip install discord.py`
 
@@ -115,7 +143,9 @@ import discord
 import asyncio
 
 TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
-CHANNEL_ID = int(os.environ.get("DISCORD_CHANNEL_ID", 0))
+CHANNEL_ID = int(
+    os.environ.get("DISCORD_ALLOWED_CHANNELS", os.environ.get("DISCORD_CHANNEL_ID", "0")).split(",")[0]
+)
 
 async def send_message(content: str):
     intents = discord.Intents.default()

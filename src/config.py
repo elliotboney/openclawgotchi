@@ -34,9 +34,21 @@ HISTORY_LIMIT = int(os.environ.get("HISTORY_LIMIT", "10"))
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini/gemini-1.5-flash")
 GEMINI_API_BASE = os.environ.get("GEMINI_API_BASE", "")  # Optional override for Z.ai/OpenAI
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+OPENAI_VISION_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini")
+OPENAI_VISION_MAX_IMAGE_MB = int(os.environ.get("OPENAI_VISION_MAX_IMAGE_MB", "15"))
+SYNCTHING_API_URL = os.environ.get("SYNCTHING_API_URL", "http://127.0.0.1:8384/rest/db/scan")
+SYNCTHING_API_KEY = os.environ.get("SYNCTHING_API_KEY", "")
 BOT_LANGUAGE = os.environ.get("BOT_LANGUAGE", "en")  # Default response language
 GROUP_CHAT_ID = int(os.environ.get("GROUP_CHAT_ID", "0"))  # Optional group for heartbeat
 ENABLE_LITELLM_TOOLS = _env_flag("ENABLE_LITELLM_TOOLS", True)
+DISCORD_BOT_TOKEN = os.environ.get("DISCORD_BOT_TOKEN", "")
+DISCORD_ALLOWED_CHANNELS = os.environ.get(
+    "DISCORD_ALLOWED_CHANNELS",
+    os.environ.get("DISCORD_CHANNEL_ID", ""),
+)
+DISCORD_ALLOWED_USERS = os.environ.get("DISCORD_ALLOWED_USERS", "")
+DISCORD_RESPOND_TO_ALL = _env_flag("DISCORD_RESPOND_TO_ALL", False)
+DISCORD_MAX_ATTACHMENT_MB = int(os.environ.get("DISCORD_MAX_ATTACHMENT_MB", "15"))
 
 # --- Bot Identity (customizable via onboarding) ---
 BOT_NAME = os.environ.get("BOT_NAME", "Gotchi")
@@ -105,3 +117,20 @@ def get_admin_id() -> Optional[int]:
     """Get first allowed user as admin."""
     users = get_allowed_users()
     return users[0] if users else None
+
+
+def _parse_int_list(value: str) -> list[int]:
+    """Parse comma-separated integer IDs."""
+    if not value:
+        return []
+    return [int(x.strip()) for x in value.split(",") if x.strip()]
+
+
+def get_discord_allowed_channels() -> list[int]:
+    """Parse allowed Discord channel IDs."""
+    return _parse_int_list(DISCORD_ALLOWED_CHANNELS)
+
+
+def get_discord_allowed_users() -> list[int]:
+    """Parse allowed Discord user IDs."""
+    return _parse_int_list(DISCORD_ALLOWED_USERS)

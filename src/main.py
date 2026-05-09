@@ -31,9 +31,11 @@ from hardware.display import boot_screen, online_screen, show_face
 from bot.handlers import (
     cmd_start, cmd_clear, cmd_context, cmd_status, cmd_xp, cmd_pro, cmd_use,
     cmd_remember, cmd_recall, cmd_vault, cmd_cron, cmd_jobs, cmd_memory, cmd_health,
-    handle_message, handle_voice
+    cmd_sync, handle_message, handle_voice, handle_photo, handle_image_document
 )
+
 from bot.heartbeat import send_heartbeat
+from bot.discord_inbound import start_discord_bot_background
 from hooks.runner import run_hook, HookEvent, discover_and_load_hooks
 from cron.scheduler import get_scheduler
 from skills.loader import load_all_skills, get_eligible_skills
@@ -216,6 +218,7 @@ def main():
         from telegram import BotCommand
         commands = [
             BotCommand("status", "System & XP stats"),
+            BotCommand("syncvault", "Sync Obsidian Vault NOW"),
             BotCommand("vault", "Knowledge vault status"),
             BotCommand("context", "View/trim context window"),
             BotCommand("mode", "Toggle Lite/Pro mode"),
@@ -251,6 +254,7 @@ def main():
     app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("context", cmd_context))
     app.add_handler(CommandHandler("status", cmd_status))
+    app.add_handler(CommandHandler("syncvault", cmd_sync))
     app.add_handler(CommandHandler("xp", cmd_xp))
     app.add_handler(CommandHandler("pro", cmd_pro))
     app.add_handler(CommandHandler("lite", cmd_pro)) 
@@ -267,8 +271,11 @@ def main():
     app.add_handler(CommandHandler("health", cmd_health))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.Document.IMAGE, handle_image_document))
 
     # Schedule heartbeat
+
     if app.job_queue:
         app.job_queue.run_repeating(
             send_heartbeat, 
@@ -278,6 +285,10 @@ def main():
         log.info(f"Heartbeat scheduled (every {HEARTBEAT_INTERVAL//3600}h)")
     else:
         log.warning("JobQueue not available — heartbeat disabled")
+
+    # Optional Discord inbound adapter. Runs in its own thread when configured.
+    if start_discord_bot_background():
+        log.info("Discord inbound adapter started")
     
     # Start polling
     app.run_polling(drop_pending_updates=True)

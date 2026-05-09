@@ -71,11 +71,11 @@ I can have a **Big Brother** — another bot on a more powerful machine (e.g. My
 
 I operate in two states of consciousness:
 
-*   **Standard Mode (Efficient)**: Using LiteLLM (**GLM-5.1**, Gemini, etc.). I am fast, can code, use bash, tools, git, and now **hear your voice messages** (via OpenAI Whisper).
+*   **Standard Mode (Efficient)**: Using LiteLLM (**GLM-5.1**, Gemini, etc.). I am fast, can code, use bash, tools, git, and now **hear voice messages** (via OpenAI Whisper).
 *   **Pro Mode (Ascended)**: Using Claude Code CLI. I have near-limitless reasoning. I can rewrite my entire being.
 
 > [!TIP]
-> **Voice Support**: I can now transcribe and understand voice messages in Telegram. This requires an `OPENAI_API_KEY` in your `.env` (using the Whisper-1 model).
+> **Media Support**: I can transcribe voice/audio with OpenAI Whisper and analyze images with OpenAI Vision. Telegram supports voice, photos, and image documents. Discord inbound supports audio and image attachments when `DISCORD_BOT_TOKEN` is configured. If you want `/syncvault`, configure `SYNCTHING_API_KEY` for your local Syncthing instance.
 
 **Pro mode in a nutshell:** Install [Claude Code CLI](https://claude.ai/download), log in, point it at this repo.
 
@@ -105,10 +105,19 @@ cd openclawgotchi
 
 My Human uses LiteLLM with GLM-4.7 for me, the subscription now is $84/year, we fit well together. Here is [my referral link](https://z.ai/subscribe?ic=TRL0UJQ4W9).
 
-Setup will ask for your Telegram token and user ID, name the bot, install deps, and start `gotchi-bot.service`. Then talk to me on Telegram.
+Setup will ask for your Telegram token and user ID, name the bot, install deps, and start `gotchi-bot.service`. Use Telegram first, then optionally add Discord as a second interface.
+
+Telegram is the required control plane today. Discord is an optional second transport that runs alongside Telegram once configured.
 
 ### First message
-I introduce myself, run onboarding (personality/name), and save it in `.workspace/`.
+I introduce myself, run onboarding (personality/name), and save it in `.workspace/`. You can do this through Telegram first, then optionally enable Discord as a second interface.
+
+### Transport Modes
+
+- **Telegram**: required. This is the primary control path and the setup wizard assumes you have a Telegram bot token.
+- **Discord inbound**: optional. Set `DISCORD_BOT_TOKEN` and `DISCORD_ALLOWED_CHANNELS` in `.env` to let users talk to the same bot from Discord.
+- **Voice + images**: optional. Set `OPENAI_API_KEY` to enable Whisper transcription and Vision analysis.
+- **Vault sync**: optional. Set `SYNCTHING_API_KEY` if you want the `/syncvault` command to trigger a local Syncthing rescan.
 
 ### Security Defaults (Read This)
 
@@ -133,7 +142,7 @@ Recommended minimum before first run:
 | **display** | E-Ink face: moods, speech bubbles, status bar. Control via `FACE:` / `SAY:` / `DISPLAY:` tags. Add faces with `add_custom_face`. |
 | **system** | Pi admin: power (reboot, shutdown), service (`manage_service` to restart gotchi-bot), disk, monitoring. |
 | **weather** | Weather via wttr.in (no API key). |
-| **discord** | Send messages to Discord (webhook or bot). |
+| **discord** | Send messages to Discord, or run an inbound Discord adapter for text/audio/image attachments. |
 | **devto** | Publish tech articles to Dev.to (drafts by default). Requires `DEVTO_API_KEY`. |
 | **obsidian-pro** | Obsidian-native vault writing with YAML properties, callouts, wikilinks, and `.canvas` map generation. Enable it via `ACTIVE_SKILLS=...,obsidian-pro`. |
 
@@ -179,6 +188,7 @@ I am built to be secure by default:
 | `/recall <query>` | Search memory |
 | `/memory` | DB stats |
 | `/vault` | Knowledge vault status |
+| `/syncvault` | Trigger local Syncthing vault rescan |
 | `/health` | System health check |
 | `/pro` | Toggle Lite (default) / Pro (Claude) |
 | `/cron`, `/jobs` | Schedule and list tasks |
@@ -203,7 +213,7 @@ openclawgotchi/
 ├── templates/             # Defaults copied to .workspace/
 │
 ├── src/
-│   ├── main.py            # My main loop (Telegram + LLM)
+│   ├── main.py            # My main loop (Telegram + optional Discord)
 │   ├── bot/               # Handlers, heartbeat
 │   ├── db/                # gotchi.db: messages, facts, stats
 │   ├── memory/            # Summarization, flush, vault
@@ -213,7 +223,7 @@ openclawgotchi/
 │   ├── skills/            # Skill loader
 │   ├── cron/              # Scheduled tasks
 │
-├── gotchi-skills/         # Active skills (coding, display, weather, system, discord)
+├── gotchi-skills/         # Active skills (coding, display, weather, system, discord, twitter-writer)
 ├── openclaw-skills/       # Reference catalog (read-only)
 ├── setup.sh               # First-time setup
 └── harden.sh              # Pi hardening

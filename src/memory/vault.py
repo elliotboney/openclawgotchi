@@ -21,6 +21,7 @@ INBOX_DIR = VAULT_DIR / "inbox"
 NOTES_DIR = VAULT_DIR / "notes"
 PROJECTS_DIR = VAULT_DIR / "projects"
 TOPICS_DIR = VAULT_DIR / "topics"
+ATTACHMENTS_DIR = VAULT_DIR / "attachments"
 INDEX_PATH = VAULT_DIR / "INDEX.md"
 
 
@@ -42,7 +43,7 @@ class VaultTriage:
 
 
 def _ensure_vault() -> None:
-    for path in (VAULT_DIR, INBOX_DIR, NOTES_DIR, PROJECTS_DIR, TOPICS_DIR):
+    for path in (VAULT_DIR, INBOX_DIR, NOTES_DIR, PROJECTS_DIR, TOPICS_DIR, ATTACHMENTS_DIR):
         path.mkdir(parents=True, exist_ok=True)
 
 
@@ -132,7 +133,9 @@ def _render_note(
         body_parts.append("## Raw\n" + raw_text.strip())
 
     rendered_body = "\n\n".join(body_parts) if body_parts else raw_text.strip()
-    links_block = "\n".join(f"- {link}" for link in links) if links else "- [[topics/inbox]]"
+    links_block = ""
+    if links:
+        links_block = f"\n\n## Links\n" + "\n".join(f"- {link}" for link in links)
 
     return (
         "---\n"
@@ -147,8 +150,8 @@ def _render_note(
         f"{_yaml_list('tags', tags)}"
         "---\n\n"
         f"# {title}\n\n"
-        f"{rendered_body}\n\n"
-        f"## Links\n{links_block}\n"
+        f"{rendered_body}"
+        f"{links_block}\n"
     )
 
 
@@ -167,19 +170,54 @@ def _touch_collection_page(directory: Path, name: str, note_link: str) -> None:
         page_path.write_text(content, encoding="utf-8")
 
 
+def _unique_note_path(title: str) -> Path:
+    """Create a human-readable unique note path without timestamp noise."""
+    slug = _slugify(title)
+    candidate = NOTES_DIR / f"{slug}.md"
+    if not candidate.exists():
+        return candidate
+
+    index = 2
+    while True:
+        candidate = NOTES_DIR / f"{slug}-{index}.md"
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
 def _update_index() -> None:
     notes = sorted(NOTES_DIR.glob("*.md"), reverse=True)[:40]
+    projects = sorted(PROJECTS_DIR.glob("*.md"))
+    topics = sorted(TOPICS_DIR.glob("*.md"))
     lines = [
         "# Knowledge Vault",
         "",
         "Obsidian-compatible knowledge captured from chat.",
         "",
-        "## Recent Notes",
+        f"Notes: {len(list(NOTES_DIR.glob('*.md')))}",
+        f"Projects: {len(projects)}",
+        f"Topics: {len(topics)}",
         "",
     ]
+
+    lines.extend(["## Projects", ""])
+    if projects:
+        for project in projects:
+            lines.append(f"- [[projects/{project.stem}|{project.stem}]]")
+    else:
+        lines.append("_No projects yet._")
+
+    lines.extend(["", "## Topics", ""])
+    if topics:
+        for topic in topics:
+            lines.append(f"- [[topics/{topic.stem}|{topic.stem}]]")
+    else:
+        lines.append("_No topics yet._")
+
+    lines.extend(["", "## Recent Notes", ""])
     if notes:
         for note in notes:
-            lines.append(f"- [[notes/{note.stem}|{note.stem}]]")
+            lines.append(f"- {note.stem}")
     else:
         lines.append("_No notes yet._")
     INDEX_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -290,8 +328,7 @@ def capture_note(
     created_at = datetime.now().isoformat(timespec="seconds")
     inbox_path = _append_inbox(raw_text, source, created_at)
 
-    slug = _slugify(title)
-    note_path = NOTES_DIR / f"{created_at[:10]}-{created_at[11:19].replace(':', '')}-{slug}.md"
+    note_path = _unique_note_path(title)
     note_path.write_text(
         _render_note(
             title=title,
@@ -395,3 +432,21 @@ def get_vault_stats(limit: int = 5) -> dict:
         "inbox_days": len(inbox),
         "recent": notes[:limit],
     }
+
+
+def save_attachment(file_path: Path, preferred_name: str = "") -> str:
+    """Move a file to the attachments directory and return its relative path."""
+    _ensure_vault()
+    if not file_path.exists():
+        return ""
+
+    # Create a readable name, then append timestamp for uniqueness.
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    base_name = preferred_name.strip() if preferred_name else file_path.stem
+    safe_name = _slugify(base_name, fallback="attachment")
+    dest_name = f"{safe_name}-{timestamp}{file_path.suffix.lower()}"
+    dest_path = ATTACHMENTS_DIR / dest_name
+
+    import shutil
+    shutil.move(str(file_path), str(dest_path))
+    return f"attachments/{dest_name}"

@@ -14,7 +14,7 @@ ENV_FILE="${SCRIPT_DIR}/.env"
 # ============================================
 # STEP 1: Check Python
 # ============================================
-echo "[1/5] Checking Python..."
+echo "[1/6] Checking Python..."
 if ! command -v python3 &> /dev/null; then
     echo "  ❌ Python 3 not found!"
     echo "  Run: sudo apt update && sudo apt install -y python3 python3-pip"
@@ -26,7 +26,7 @@ echo "  ✅ Python $(python3 --version | cut -d' ' -f2)"
 # STEP 2: Configure .env (interactive)
 # ============================================
 echo ""
-echo "[2/5] Configuration..."
+echo "[2/6] Configuration..."
 
 if [ -f "$ENV_FILE" ]; then
     echo "  Found existing .env"
@@ -79,6 +79,15 @@ else
     OWNER_NAME=${OWNER_NAME:-Owner}
     sed -i "s|OWNER_NAME=.*|OWNER_NAME=${OWNER_NAME}|" "$ENV_FILE"
     
+    # OpenAI API (optional but needed for voice/photo support)
+    echo ""
+    echo "  🧠 Optional: OpenAI API for voice + image support"
+    read -p "  OpenAI API Key [skip]: " OPENAI_KEY
+    if [ -n "$OPENAI_KEY" ]; then
+        sed -i "s|OPENAI_API_KEY=.*|OPENAI_API_KEY=${OPENAI_KEY}|" "$ENV_FILE"
+        echo "  ✅ OpenAI key saved"
+    fi
+
     # Gemini API (optional)
     echo ""
     echo "  🔑 Optional: Gemini API for fallback (get at aistudio.google.com)"
@@ -90,6 +99,19 @@ else
     else
         echo "  ℹ️  No Gemini key provided. The default Lite preset remains glm, which requires its own provider key in .env."
     fi
+
+    # Discord bot token (optional)
+    echo ""
+    echo "  💬 Optional: Discord inbound bot"
+    read -p "  Discord Bot Token [skip]: " DISCORD_TOKEN
+    if [ -n "$DISCORD_TOKEN" ]; then
+        sed -i "s|# DISCORD_BOT_TOKEN=.*|DISCORD_BOT_TOKEN=${DISCORD_TOKEN}|" "$ENV_FILE"
+        read -p "  Allowed Discord channel IDs (comma-separated) [skip]: " DISCORD_CHANNELS
+        if [ -n "$DISCORD_CHANNELS" ]; then
+            sed -i "s|# DISCORD_ALLOWED_CHANNELS=.*|DISCORD_ALLOWED_CHANNELS=${DISCORD_CHANNELS}|" "$ENV_FILE"
+        fi
+        echo "  ✅ Discord settings saved"
+    fi
     
     echo ""
     echo "  ✅ Configuration saved to .env"
@@ -99,7 +121,7 @@ fi
 # STEP 3: Create .workspace
 # ============================================
 echo ""
-echo "[3/5] Setting up workspace..."
+echo "[3/6] Setting up workspace..."
 if [ ! -d "${SCRIPT_DIR}/.workspace" ]; then
     cp -r "${SCRIPT_DIR}/templates" "${SCRIPT_DIR}/.workspace"
     echo "  ✅ Created .workspace/ from templates"
@@ -127,16 +149,13 @@ if [ ! -d "${SCRIPT_DIR}/venv" ]; then
 fi
 
 # Install python packages in venv
-"${SCRIPT_DIR}/venv/bin/pip" install --quiet \
-    "python-telegram-bot[job-queue]" \
-    litellm \
-    Pillow \
+"${SCRIPT_DIR}/venv/bin/pip" install --quiet -r "${SCRIPT_DIR}/requirements.txt" \
     RPi.GPIO \
     spidev \
     gpiozero \
     2>/dev/null
 
-echo "  ✅ Dependencies installed"
+echo "  ✅ Dependencies installed from requirements.txt"
 
 # Enable SPI for E-Ink display (Pi only)
 if command -v raspi-config &> /dev/null; then
@@ -193,6 +212,39 @@ sudo chmod 0440 "$SUDOERS_FILE"
 echo "  ✅ Display permissions configured (passwordless sudo)"
 
 # ============================================
+# OPTIONAL: OBSIDIAN SYNC (Syncthing)
+# ============================================
+echo ""
+read -p "  Do you want to install Syncthing for Obsidian sync? (y/N): " INSTALL_SYNC
+if [[ $INSTALL_SYNC =~ ^[Yy]$ ]]; then
+    echo "  Installing and optimizing Syncthing..."
+    sudo apt-get install -y syncthing -qq
+    SYNCTHING_CONFIG_DIR="${HOME}/.config/syncthing"
+    # Generate config
+    syncthing --generate="${SYNCTHING_CONFIG_DIR}" > /dev/null 2>&1
+    # Optimize for Pi Zero (30m interval, no FS watcher, listen on all IPs)
+    sed -i 's/127.0.0.1:8384/0.0.0.0:8384/g' "${SYNCTHING_CONFIG_DIR}/config.xml"
+    sed -i 's/<fsWatcherEnabled>true<\/fsWatcherEnabled>/<fsWatcherEnabled>false<\/fsWatcherEnabled>/g' "${SYNCTHING_CONFIG_DIR}/config.xml"
+    sed -i 's/<rescanIntervalS>[0-9]*<\/rescanIntervalS>/<rescanIntervalS>1800<\/rescanIntervalS>/g' "${SYNCTHING_CONFIG_DIR}/config.xml"
+
+    # Apply CPU limits
+    sudo mkdir -p /etc/systemd/system/syncthing@${USER}.service.d
+    echo -e "[Service]\nEnvironment=GOMAXPROCS=1\nCPUWeight=20" | sudo tee /etc/systemd/system/syncthing@${USER}.service.d/limits.conf > /dev/null
+
+    # Enable and start
+    sudo systemctl daemon-reload
+    sudo systemctl enable syncthing@${USER} --now > /dev/null 2>&1
+
+    SYNC_ID=$(syncthing --device-id)
+    echo ""
+    echo "  ✅ Syncthing installed and optimized!"
+    echo "  ⚠️  NOTE: To prevent Pi Zero overheating, sync interval is set to 30 mins."
+    echo "     If you need it faster, edit: ~/.config/syncthing/config.xml"
+    echo "  📍 Web UI: http://$(hostname -I | awk '{print $1}'):8384"
+    echo "  🔑 Device ID: ${SYNC_ID}"
+fi
+
+# ============================================
 # OPTIONAL: HARDENING (recommended for Pi Zero)
 # ============================================
 echo ""
@@ -231,10 +283,12 @@ if [[ "$START_NOW" =~ ^[Yy]$ ]]; then
         echo "║           ✅ Setup Complete!                      ║"
         echo "╚═══════════════════════════════════════════════════╝"
         echo ""
-        echo "  Your bot is running! Send it a message on Telegram."
+        echo "  Your bot is running! Telegram is the required control plane."
         echo ""
         echo "  On first message, the bot will introduce itself"
         echo "  and ask about its personality (onboarding)."
+        echo "  Discord inbound is optional and only works if you set"
+        echo "  DISCORD_BOT_TOKEN and DISCORD_ALLOWED_CHANNELS in .env."
         echo ""
     else
         echo ""
@@ -257,4 +311,9 @@ echo ""
 echo "  🔧 Customize:"
 echo "     nano .env                          # Edit config"
 echo "     nano .workspace/SOUL.md            # Edit personality"
+echo ""
+echo "  Optional features:"
+echo "     OPENAI_API_KEY                     # Enables voice + image analysis"
+echo "     DISCORD_BOT_TOKEN                  # Enables Discord inbound adapter"
+echo "     SYNCTHING_API_KEY                  # Enables /syncvault"
 echo ""

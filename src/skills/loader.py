@@ -198,7 +198,7 @@ def load_all_skills() -> list[Skill]:
 
     # Skills that are always loaded (essential for bot operation)
     # gotchi-skills take precedence over openclaw-skills with same name
-    CORE_SKILLS = ["coding", "display", "weather", "system", "discord"]
+    CORE_SKILLS = ["coding", "display", "weather", "system", "discord", "twitter-writer"]
     
     # Get additional active skills from env (optional)
     active_env = os.environ.get("ACTIVE_SKILLS", "")

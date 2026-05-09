@@ -76,18 +76,21 @@ def get_auto_mood() -> tuple[str, str]:
     # Priority checks (highest priority first)
     
     # 1. CRITICAL states
+    # Keep auto-mood text concise and free of metric values already shown in
+    # the header. Repeating live numbers in the footer just makes them drift
+    # out of sync and adds layout noise.
     if temp >= TEMP_CRITICAL:
-        return "dead", f"OVERHEATING {temp}°C!"
-    
+        return "dead", "OVERHEATING!"
+
     if ram_free <= RAM_CRITICAL:
-        return "dead", f"OOM! {ram_free}MB left"
-    
-    # 2. Warning states  
+        return "dead", "OOM!"
+
+    # 2. Warning states
     if temp >= TEMP_HOT:
-        return "nervous", f"Hot! {temp}°C"
-    
+        return "nervous", "Running hot"
+
     if ram_free <= RAM_LOW:
-        return "nervous", f"Low RAM: {ram_free}MB"
+        return "nervous", "RAM low"
     
     # 3. Achievement states
     if uptime_seconds >= UPTIME_LEGEND:

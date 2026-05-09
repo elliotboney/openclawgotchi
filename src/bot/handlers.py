@@ -6,6 +6,8 @@ import logging
 import re
 import os
 import tempfile
+import base64
+import asyncio
 from pathlib import Path
 
 from telegram import Update
@@ -29,7 +31,14 @@ from memory.vault import classify_message_for_vault, get_vault_stats
 from memory.summarize import optimize_history
 from cron.scheduler import add_cron_job, list_cron_jobs, remove_cron_job
 from skills.loader import get_eligible_skills
-from config import LLM_PRESETS, OPENAI_API_KEY
+from config import (
+    LLM_PRESETS,
+    OPENAI_API_KEY,
+    OPENAI_VISION_MODEL,
+    OPENAI_VISION_MAX_IMAGE_MB,
+    SYNCTHING_API_KEY,
+    SYNCTHING_API_URL,
+)
 from llm.prompts import build_system_context, build_vault_context
 
 log = logging.getLogger(__name__)
@@ -55,6 +64,158 @@ async def transcribe_voice(file_path: str) -> str:
     except Exception as e:
         log.error(f"Whisper transcription failed: {e}")
         return f"Error: Transcription failed: {e}"
+
+
+def image_to_base64(file_path: str) -> str:
+    """Convert image file to base64 string."""
+    with open(file_path, "rb") as image_file:
+        return base64.b64encode(image_file.read()).decode('utf-8')
+
+
+def _derive_attachment_name(caption: str, vision_text: str) -> str:
+    """Create a readable attachment stem from caption or vision output."""
+    if caption and caption.strip():
+        return caption.strip()[:80]
+
+    text = (vision_text or "").strip()
+    if not text:
+        return "image-capture"
+
+    title_match = re.search(r'Title:\s*"?([^"\n]+)"?', text, re.IGNORECASE)
+    if title_match:
+        return title_match.group(1).strip()[:80]
+
+    first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
+    first_line = re.sub(r"^\d+\.\s*", "", first_line)
+    first_line = re.sub(r"^\*+\s*Title\s*:?\s*", "", first_line, flags=re.IGNORECASE)
+    first_line = re.sub(
+        r"^(the image (features|shows|depicts)|this image (shows|depicts)|screenshot of)\s+",
+        "",
+        first_line,
+        flags=re.IGNORECASE,
+    )
+    first_line = re.sub(r"[*`_#]", "", first_line)
+    first_line = first_line.split(".")[0].split(":")[0].strip(" -")
+    return first_line[:80] or "image-capture"
+
+
+async def analyze_image_with_openai(file_path: str, prompt: str, mime_type: str = "image/jpeg") -> str:
+    """Analyze an image with an OpenAI vision-capable model."""
+    if not OPENAI_API_KEY:
+        return "Error: OPENAI_API_KEY not set in .env."
+
+    max_bytes = OPENAI_VISION_MAX_IMAGE_MB * 1024 * 1024
+    if os.path.getsize(file_path) > max_bytes:
+        return f"Error: Image too large for vision analysis. Max: {OPENAI_VISION_MAX_IMAGE_MB} MB."
+
+    img_b64 = image_to_base64(file_path)
+
+    def _call_openai() -> str:
+        import openai
+
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model=OPENAI_VISION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime_type};base64,{img_b64}"},
+                        },
+                    ],
+                }
+            ],
+        )
+        return (response.choices[0].message.content or "").strip()
+
+    try:
+        return await asyncio.to_thread(_call_openai)
+    except Exception as e:
+        log.error(f"OpenAI vision failed: {e}")
+        return f"Error: Vision analysis failed: {e}"
+
+
+async def process_image_file(
+    *,
+    local_file_path: str,
+    caption: str = "",
+    conv_id: int,
+    mime_type: str = "image/jpeg",
+    source: str = "telegram",
+) -> str:
+    """Analyze an image, save it to the vault, and return a user-facing summary."""
+    from memory.vault import save_attachment, capture_note
+
+    vision_prompt = (
+        "Analyze this image and provide:\n"
+        "1. TITLE: A very short, descriptive title (3-5 words) that captures the core subject.\n"
+        "2. SUMMARY: A detailed transcription and visual description. If there is text, transcribe it. If there are tables, reproduce them. Focus only on visual facts.\n"
+        "Format: TITLE: [your title]\nSUMMARY: [your analysis]"
+    )
+
+    response = await analyze_image_with_openai(local_file_path, vision_prompt, mime_type)
+    connector = "openai"
+    if response.startswith("Error:"):
+        raise RuntimeError(response)
+
+    # 4. Parse response for title
+    note_title = "Visual Capture"
+    analysis_text = response
+    if "TITLE:" in response:
+        try:
+            parts = response.split("TITLE:", 1)[1].split("SUMMARY:", 1)
+            note_title = parts[0].strip().replace("*", "").replace("#", "")
+            if len(parts) > 1:
+                analysis_text = parts[1].strip()
+        except Exception:
+            pass
+    elif caption:
+        note_title = caption[:40]
+
+    attachment_name = _derive_attachment_name(caption, analysis_text)
+    rel_path = save_attachment(Path(local_file_path), preferred_name=attachment_name)
+
+    note_body = (
+        f"![[{rel_path}]]\n\n"
+        f"### Visual Analysis\n{analysis_text}\n"
+    )
+
+    result = capture_note(
+        title=note_title,
+        raw_text=caption or "Image attachment",
+        summary="Visual capture analyzed by " + connector,
+        body=note_body,
+        source=source,
+        note_type="visual",
+        tags=["vision", "attachment"]
+    )
+
+    history_entry = f"[IMAGE SAVED to Vault: {result.title}]\n\nSummary of what I saw: {analysis_text}"
+    save_message(conv_id, "user", f"[User sent an image with caption: {caption or 'none'}]")
+    save_message(conv_id, "assistant", history_entry)
+
+    msg = (
+        f"📸 *Captured to Vault: {result.title}*\n\n"
+        f"```\n{analysis_text}\n```\n"
+        f"_Image saved to attachments/_"
+    )
+    show_face(mood="smart", text="I see it!")
+    return msg
+
+
+async def _process_image_message(update: Update, local_file_path: str, mime_type: str = "image/jpeg") -> None:
+    """Analyze an image, save it to the vault, and reply safely."""
+    msg = await process_image_file(
+        local_file_path=local_file_path,
+        caption=update.message.caption or "",
+        conv_id=update.effective_chat.id,
+        mime_type=mime_type,
+        source="telegram",
+    )
+    await send_long_message(update, msg)
 
 # Patterns that signal the user is unhappy with the bot's response
 _NEGATIVE_PATTERNS = (
@@ -139,6 +300,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"/pro — switch to Pro mode\n"
         f"/lite — switch to Lite mode\n"
         f"/mode — toggle Lite/Pro mode\n"
+        f"/syncvault — sync Obsidian vault NOW\n"
         f"/vault — knowledge vault status\n"
         f"/memory — database stats\n\n"
         f"*Memory:*\n"
@@ -443,6 +605,43 @@ async def cmd_recall(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 
+async def cmd_sync(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Trigger manual Syncthing rescan for Obsidian vault."""
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if not is_allowed(user.id, chat.id):
+        return
+
+    await chat.send_action(ChatAction.TYPING)
+
+    if not SYNCTHING_API_KEY:
+        await update.message.reply_text(
+            "Sync not configured. Set `SYNCTHING_API_KEY` in `.env` to enable `/syncvault`.",
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        import requests
+
+        headers = {"X-API-Key": SYNCTHING_API_KEY}
+        response = requests.post(SYNCTHING_API_URL, headers=headers, timeout=10)
+
+        if response.status_code == 200:
+            await update.message.reply_text(
+                "🔄 *Sync triggered.* Check Obsidian in a few seconds.",
+                parse_mode="Markdown",
+            )
+            show_face(mood="excited", text="Syncing...")
+        else:
+            await update.message.reply_text(f"❌ Sync failed (API Error: {response.status_code})")
+
+    except Exception as e:
+        log.error(f"Manual sync failed: {e}")
+        await update.message.reply_text(f"❌ Error triggering sync: {e}")
+
+
 async def cmd_vault(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Show vault status."""
     user = update.effective_user
@@ -626,6 +825,69 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         log.error(f"Voice handling failed: {e}")
         await update.message.reply_text(f"Error processing voice: {e}")
+
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle incoming photos/images."""
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if not is_allowed(user.id, chat.id):
+        if chat.type == "private":
+            await update.message.reply_text("Access denied.")
+        return
+
+    # Show "uploading" status while we process
+    await chat.send_action(ChatAction.UPLOAD_PHOTO)
+
+    try:
+        # 1. Download the highest resolution photo
+        photo_file = await update.message.photo[-1].get_file()
+
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+            await photo_file.download_to_drive(tmp.name)
+            tmp_path = tmp.name
+        await _process_image_message(update, tmp_path, "image/jpeg")
+
+    except Exception as e:
+        log.error(f"Photo handling failed: {e}")
+        await update.message.reply_text(f"Error processing photo: {e}")
+    finally:
+        if 'tmp_path' in locals() and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+async def handle_image_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle images sent as documents, e.g. full-quality screenshots."""
+    user = update.effective_user
+    chat = update.effective_chat
+
+    if not is_allowed(user.id, chat.id):
+        if chat.type == "private":
+            await update.message.reply_text("Access denied.")
+        return
+
+    document = update.message.document
+    if not document or not (document.mime_type or "").startswith("image/"):
+        return
+
+    await chat.send_action(ChatAction.UPLOAD_PHOTO)
+
+    suffix = Path(document.file_name or "image.bin").suffix or ".img"
+
+    try:
+        image_file = await document.get_file()
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            await image_file.download_to_drive(tmp.name)
+            tmp_path = tmp.name
+
+        await _process_image_message(update, tmp_path, document.mime_type)
+    except Exception as e:
+        log.error(f"Image document handling failed: {e}")
+        await update.message.reply_text(f"Error processing image: {e}")
+    finally:
+        if 'tmp_path' in locals() and os.path.exists(tmp_path):
+            os.remove(tmp_path)
 
 
 # --- Message Handler ---
