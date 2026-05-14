@@ -1349,9 +1349,9 @@ class LiteLLMConnector(LLMConnector):
         messages.append({"role": "user", "content": prompt})
         
         # Agent loop with safety limits
-        MAX_TURNS = 40
+        MAX_TURNS = 100
         tool_calls_count = 0
-        MAX_TOOL_CALLS = 50  # Safety limit
+        MAX_TOOL_CALLS = 150  # Safety limit
         
         # Loop detection
         recent_tools = []  # Track last N tool calls

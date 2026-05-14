@@ -85,7 +85,7 @@ HEARTBEAT_INTERVAL = 14400  # 4 hours in seconds
 HEARTBEAT_FIRST_RUN = 60    # First heartbeat after 1 minute
 TELEGRAM_MSG_LIMIT = 4096   # Max message length
 LEVEL_UP_DISPLAY_DELAY = 15 # Seconds to wait before showing level-up on E-Ink
-MAX_TOOL_CALLS = 20         # Max tool calls per LLM request
+MAX_TOOL_CALLS = 150        # Max tool calls per LLM request
 LLM_TIMEOUT = 999           # Seconds timeout for LLM API calls
 # Model context window (tokens). Used for /context "how full is the model's window"
 MODEL_CONTEXT_TOKENS = int(os.environ.get("MODEL_CONTEXT_TOKENS", "128000"))
