@@ -196,6 +196,43 @@ def _build_memory_context() -> str:
     return "\n\n".join(sections)
 
 
+def _build_retrieval_context(user_message: str) -> str:
+    """
+    Pull likely relevant facts and vault snippets into the prompt before the LLM
+    answers. This makes the vault useful as recall, not just archival storage.
+    """
+    message = (user_message or "").strip()
+    if not message or message.startswith("/"):
+        return ""
+
+    sections = []
+
+    try:
+        from db.memory import search_facts
+        facts = search_facts(message, limit=3)
+        if facts:
+            lines = ["## Recalled Facts"]
+            for fact in facts:
+                category = fact.get("category", "general")
+                content = (fact.get("content", "") or "").replace("\n", " ").strip()[:180]
+                if content:
+                    lines.append(f"- [{category}] {content}")
+            if len(lines) > 1:
+                sections.append("\n".join(lines))
+    except Exception:
+        pass
+
+    try:
+        from memory.vault import retrieve_vault_context
+        vault_hits = retrieve_vault_context(message, limit=3)
+        if vault_hits:
+            sections.append("## Relevant Vault Notes\n" + vault_hits)
+    except Exception:
+        pass
+
+    return "\n\n".join(sections)
+
+
 def build_system_context(user_message: str = "") -> str:
     """
     Build system context with lazy loading.
@@ -252,6 +289,16 @@ def build_system_context(user_message: str = "") -> str:
     memory_parts = _build_memory_context()
     if memory_parts:
         parts.append(f"\n---\n{memory_parts}")
+
+    retrieval_parts = _build_retrieval_context(user_message)
+    if retrieval_parts:
+        parts.append(
+            "\n---\n"
+            "## Recalled Project Context\n"
+            "Use this as supporting context when it is relevant to the user's message.\n"
+            "Do not pretend certainty if the retrieved notes are ambiguous.\n\n"
+            f"{retrieval_parts}"
+        )
     
     # Stats for context only — do NOT encourage the model to echo them
     parts.append(

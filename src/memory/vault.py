@@ -420,6 +420,131 @@ def search_vault(query: str, limit: int = 10) -> str:
     return "\n".join(results) if results else f"No vault matches for: {query}"
 
 
+def _query_tokens(query: str) -> list[str]:
+    """Extract stable word-like tokens for lightweight retrieval."""
+    tokens = re.findall(r"\w+", (query or "").lower(), flags=re.UNICODE)
+    seen: list[str] = []
+    for token in tokens:
+        if len(token) < 3:
+            continue
+        if token not in seen:
+            seen.append(token)
+    return seen[:12]
+
+
+def _expand_query_tokens(query: str) -> list[str]:
+    """
+    Lightweight multilingual expansion for common recall intents.
+    Keep this intentionally small and generic.
+    """
+    tokens = _query_tokens(query)
+    expanded = list(tokens)
+
+    expansions = {
+        "test": ["tests", "testing"],
+        "tests": ["test", "testing"],
+        "testing": ["test", "tests"],
+        "тест": ["тесты", "test", "tests", "testing"],
+        "тесты": ["тест", "test", "tests", "testing"],
+        "yas": ["bug", "bugs", "issue", "issues", "testing"],
+        "bug": ["bugs", "issue", "issues", "finding"],
+        "bugs": ["bug", "issue", "issues", "finding"],
+        "issue": ["issues", "bug", "bugs", "finding"],
+        "issues": ["issue", "bug", "bugs", "finding"],
+        "finding": ["findings", "issue", "issues", "bug", "bugs"],
+        "findings": ["finding", "issue", "issues", "bug", "bugs"],
+    }
+
+    for token in list(tokens):
+        for alt in expansions.get(token, []):
+            if alt not in expanded:
+                expanded.append(alt)
+
+    return expanded[:20]
+
+
+def retrieve_vault_context(query: str, limit: int = 3, snippet_chars: int = 280) -> str:
+    """
+    Retrieve likely relevant vault snippets for a user query.
+    Uses lightweight token scoring so recall works even when the query wording
+    differs from the saved note wording.
+    """
+    _ensure_vault()
+    query = (query or "").strip()
+    if not query:
+        return ""
+
+    tokens = _expand_query_tokens(query)
+    if not tokens and len(query) < 8:
+        return ""
+
+    scored: list[tuple[int, str]] = []
+    exact_query = query.lower()
+
+    for path in sorted(VAULT_DIR.rglob("*.md")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        lower = text.lower()
+        rel_path = str(path.relative_to(VAULT_DIR))
+        rel_lower = rel_path.lower()
+        filename_lower = path.stem.lower()
+        title_match = re.search(r"^#\s+(.+)$", text, flags=re.MULTILINE)
+        title_lower = title_match.group(1).strip().lower() if title_match else ""
+
+        score = 0
+        if exact_query in lower:
+            score += 8
+        if exact_query in rel_lower:
+            score += 10
+
+        if rel_lower.startswith("notes/"):
+            score += 6
+        elif rel_lower.startswith("projects/") or rel_lower.startswith("topics/"):
+            score += 4
+        elif rel_lower.startswith("inbox/"):
+            score -= 6
+
+        token_hits: list[str] = []
+        for token in tokens:
+            hit_count = lower.count(token)
+            path_hit = token in rel_lower
+            filename_hit = token in filename_lower
+            title_hit = token in title_lower
+            if hit_count or path_hit:
+                token_hits.append(token)
+                score += min(hit_count, 3)
+                if path_hit:
+                    score += 4
+                if filename_hit:
+                    score += 6
+                if title_hit:
+                    score += 5
+
+        if score <= 0:
+            continue
+
+        snippet_start = 0
+        if token_hits:
+            positions = [lower.find(token) for token in token_hits if lower.find(token) >= 0]
+            if positions:
+                snippet_start = max(0, min(positions) - 80)
+        elif exact_query in lower:
+            snippet_start = max(0, lower.find(exact_query) - 80)
+
+        snippet = text[snippet_start:snippet_start + snippet_chars].replace("\n", " ").strip()
+        if not snippet:
+            continue
+
+        scored.append((score, f"- {rel_path}: {snippet}"))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    lines = [line for _, line in scored[:limit]]
+    return "\n".join(lines)
+
+
 def get_vault_stats(limit: int = 5) -> dict:
     """Return lightweight vault stats for UI commands."""
     _ensure_vault()

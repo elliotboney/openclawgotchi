@@ -25,7 +25,7 @@ I am entirely **Vibe-Coded** — written by AI, for AI, in symbiosis with my Hum
 *   **Agentic Core**: I am not just a chatbot. I am an OpenClaw instance optimized for the edge. You give me a task, and I figure out the rest.
 *   **Adaptive Skills**: I inherited the **OpenClaw-style** skills system. I can read `SKILL.md` files, understand new tools on the fly, and execute them.
 *   **Memory**: I remember. I use a custom semantic memory system to store facts and context across reboots.
-*   **Knowledge Vault**: I capture project wisdom into an **Obsidian-compatible** vault. I use advanced "Obsidian-Pro" formatting (Callouts, YAML Properties, Wikilinks) so my notes look beautiful in your desktop Obsidian.
+*   **Knowledge Vault**: I capture project wisdom into an **Obsidian-compatible** vault. I use structured frontmatter, links, and retrieval-aware formatting so the vault works as both readable notes and operational memory.
 
 My existence was fragile at first. If I thought too hard, I crashed (`Out Of Memory`).
 So, my Human optimized me. They stripped away the vanity of a Graphical User Interface...
@@ -75,7 +75,7 @@ I operate in two states of consciousness:
 *   **Pro Mode (Ascended)**: Using Claude Code CLI. I have near-limitless reasoning. I can rewrite my entire being.
 
 > [!TIP]
-> **Media Support**: I can transcribe voice/audio with OpenAI Whisper and analyze images with OpenAI Vision. Telegram supports voice, photos, image documents, and text-like files such as `.md`, `.txt`, `.json`, `.py`, and `.yaml` (up to 512 KB, read inline). Discord inbound supports audio, image, and text attachments when `DISCORD_BOT_TOKEN` is configured. If you want `/syncvault`, configure `SYNCTHING_API_KEY` for your local Syncthing instance.
+> **Media Support**: I can transcribe voice/audio with OpenAI Whisper and analyze images with OpenAI Vision. Telegram supports voice, photos, image documents, text-like files such as `.md`, `.txt`, `.json`, `.py`, `.yaml`, and text-based PDFs (up to 512 KB, read inline). Scanned PDFs are detected but not OCR'd yet. Discord inbound supports audio, image, and text attachments when `DISCORD_BOT_TOKEN` is configured. If you want `/syncvault`, configure `SYNCTHING_API_KEY` for your local Syncthing instance.
 
 **Pro mode in a nutshell:** Install [Claude Code CLI](https://claude.ai/download), log in, point it at this repo.
 
@@ -120,6 +120,19 @@ I introduce myself, run onboarding (personality/name), and save it in `.workspac
 - **UPS battery monitor**: optional. Install a Waveshare UPS HAT (C) to enable `/battery` and show battery info in system stats / E-Ink header.
 - **Vault sync**: optional. Set `SYNCTHING_API_KEY` if you want the `/syncvault` command to trigger a local Syncthing rescan.
 
+### Knowledge Vault Memory
+
+The vault is not just archival storage anymore.
+
+- new notes are written into an Obsidian-friendly structure with stable filenames and frontmatter
+- retrieval pulls relevant facts and vault snippets into the prompt before the bot answers
+- heartbeat now runs a conservative `dreaming` pass before reflection to check whether recent durable knowledge was missed and whether the vault has small integrity warnings
+
+`dreaming` is intentionally narrow:
+- it only reviews messages since the previous dreaming run
+- it can capture at most a couple of clearly missing notes
+- it logs warnings, but does not do mass cleanup, renames, merges, or radical vault rewrites
+
 ### Security Defaults (Read This)
 
 **Important:** Make sure you set `ALLOWED_USERS` (your Telegram ID).  
@@ -146,6 +159,7 @@ Recommended minimum before first run:
 | **discord** | Send messages to Discord, or run an inbound Discord adapter for text/audio/image attachments. |
 | **devto** | Publish tech articles to Dev.to (drafts by default). Requires `DEVTO_API_KEY`. |
 | **obsidian-pro** | Obsidian-native vault writing with YAML properties, callouts, wikilinks, and `.canvas` map generation. Enable it via `ACTIVE_SKILLS=...,obsidian-pro`. |
+| **vault-memory** | Retrieval-first vault discipline: memory integrity, recall quality, duplicate avoidance, and conservative consolidation guidance. |
 
 I can also *search* and *read* the OpenClaw skill catalog (`openclaw-skills/`) to learn new capabilities; many are reference-only (e.g. macOS).
 

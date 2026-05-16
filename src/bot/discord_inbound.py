@@ -27,10 +27,12 @@ from config import (
 )
 from db.memory import (
     add_fact,
+    get_active_task,
     get_history,
     save_feedback_event,
     save_message,
     save_pending_task,
+    set_active_task,
     save_user,
 )
 from hardware.display import error_screen, parse_and_execute_commands, show_face
@@ -43,7 +45,13 @@ from memory.summarize import optimize_history
 from memory.vault import classify_message_for_vault
 
 from bot.handlers import (
+    _allowed_tool_names_for_mode,
+    _build_continuity_prompt,
+    _build_reply_mode_prompt,
     _is_negative_feedback,
+    _should_allow_auto_remember,
+    _should_answer_first,
+    _summarize_active_task,
     _should_enable_memo_mode,
     process_image_file,
     transcribe_voice,
@@ -122,18 +130,20 @@ async def _download_attachment(attachment) -> str:
     return tmp_path
 
 
-async def _handle_image_attachment(message, attachment, conv_id: int) -> None:
+async def _handle_image_attachment(message, attachment, conv_id: int, *, is_dm: bool, should_respond: bool) -> None:
     tmp_path = ""
     try:
         tmp_path = await _download_attachment(attachment)
-        summary = await process_image_file(
+        image_result = await process_image_file(
             local_file_path=tmp_path,
             caption=message.content or "",
             conv_id=conv_id,
             mime_type=attachment.content_type or "image/jpeg",
             source="discord",
         )
-        await _send_long(message, summary)
+        if should_respond:
+            await _send_long(message, image_result.chat_summary)
+            await _handle_text_message(message, image_result.reasoning_text, is_dm=is_dm, should_respond=should_respond)
     finally:
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -152,6 +162,7 @@ async def _transcribe_audio_attachment(attachment) -> str:
 async def _handle_text_message(message, user_text: str, *, is_dm: bool, should_respond: bool) -> None:
     conv_id = _discord_conv_id(message.channel.id)
     sender = _sender_name(message.author)
+    active_task_summary = _summarize_active_task(user_text)
 
     run_hook(HookEvent(
         event_type="message",
@@ -181,6 +192,8 @@ async def _handle_text_message(message, user_text: str, *, is_dm: bool, should_r
         return
 
     save_user(message.author.id, message.author.name or "", message.author.display_name or "", "")
+    if active_task_summary:
+        set_active_task(conv_id, active_task_summary)
 
     try:
         async with message.channel.typing():
@@ -189,10 +202,13 @@ async def _handle_text_message(message, user_text: str, *, is_dm: bool, should_r
                 history = history[:-1]
 
             onboarding_mode = needs_onboarding()
+            classification = None
             memo_mode = False
             if not onboarding_mode:
                 classification = await classify_message_for_vault(user_text, history)
                 memo_mode = _should_enable_memo_mode(user_text, classification)
+                if _should_answer_first(user_text, classification):
+                    memo_mode = False
 
             flush_prompt = check_and_inject_flush(history)
             history = optimize_history(history)
@@ -203,6 +219,8 @@ async def _handle_text_message(message, user_text: str, *, is_dm: bool, should_r
                 user_text = user_text + flush_prompt
 
             system_prompt: Optional[str] = None
+            continuity_prompt = _build_continuity_prompt(get_active_task(conv_id))
+            allowed_tool_names = _allowed_tool_names_for_mode(memo_mode)
             if memo_mode:
                 system_prompt = build_system_context(user_text) + "\n---\n" + build_vault_context() + "\n\n"
                 system_prompt += (
@@ -212,16 +230,26 @@ async def _handle_text_message(message, user_text: str, *, is_dm: bool, should_r
                     "If anything essential is unclear, ask one short clarifying question before writing.\n"
                     "After capture, keep the reply brief and mention what was saved.\n"
                 )
+                system_prompt += continuity_prompt
+            else:
+                system_prompt = build_system_context(user_text)
+                system_prompt += _build_reply_mode_prompt(user_text, history)
+                system_prompt += continuity_prompt
 
             transport_note = (
                 "\n---\n## Discord Transport Note\n"
                 "You are replying in Discord. Keep replies under Discord's message limits. "
                 "Scheduled reminders currently deliver through Telegram/admin fallback, not Discord channels."
             )
-            system_prompt = (system_prompt or build_system_context(user_text)) + transport_note
+            system_prompt = system_prompt + transport_note
 
             log.info("[discord %s] -> %s", sender, user_text[:80])
-            response, connector = await get_router().call(user_text, history, system_prompt=system_prompt)
+            response, connector = await get_router().call(
+                user_text,
+                history,
+                system_prompt=system_prompt,
+                allowed_tool_names=allowed_tool_names,
+            )
             log.info("[discord %s] <- [%s] %s", sender, connector, response[:80])
 
         if response.startswith("Error:"):
@@ -239,7 +267,7 @@ async def _handle_text_message(message, user_text: str, *, is_dm: bool, should_r
         if not cmds.get("face"):
             show_face(mood="happy", text=clean_text[:50] if clean_text else "...")
 
-        if cmds.get("remember"):
+        if cmds.get("remember") and _should_allow_auto_remember(user_text, classification, memo_mode):
             add_fact(cmds["remember"], "auto_memory")
 
         save_message(conv_id, "assistant", response)
@@ -250,7 +278,7 @@ async def _handle_text_message(message, user_text: str, *, is_dm: bool, should_r
         from audit_logging.command_logger import log_bot_response
         log_bot_response(conv_id, response, connector)
 
-        if cmds.get("remember"):
+        if cmds.get("remember") and _should_allow_auto_remember(user_text, classification, memo_mode):
             clean_text += f"\n\n```text\nremembered: {cmds['remember'][:80]}\n```"
         if connector != "litellm":
             clean_text += "\n\nPro"
@@ -267,7 +295,7 @@ async def _handle_text_message(message, user_text: str, *, is_dm: bool, should_r
             on_tool_use(int(tool_match.group(1)))
         if memo_mode and "saved vault note" in tool_source.lower():
             on_knowledge_capture()
-        elif cmds.get("remember"):
+        elif cmds.get("remember") and _should_allow_auto_remember(user_text, classification, memo_mode):
             on_tool_use(1)
 
     except RateLimitError:
@@ -334,7 +362,13 @@ def start_discord_bot_background() -> Optional[threading.Thread]:
                 continue
             if kind == "image":
                 if should_respond:
-                    await _handle_image_attachment(message, attachment, _discord_conv_id(message.channel.id))
+                    await _handle_image_attachment(
+                        message,
+                        attachment,
+                        _discord_conv_id(message.channel.id),
+                        is_dm=is_dm,
+                        should_respond=should_respond,
+                    )
                 else:
                     save_message(_discord_conv_id(message.channel.id), "user", f"[{_sender_name(message.author)} sent an image]")
             elif kind == "audio":

@@ -1119,6 +1119,14 @@ TOOL_MAP = {
 }
 
 
+def _filter_tools(allowed_tool_names: Optional[list[str]] = None) -> list[dict]:
+    """Return the tool list narrowed to the allowed names when provided."""
+    if not allowed_tool_names:
+        return TOOLS
+    allowed = set(allowed_tool_names)
+    return [tool for tool in TOOLS if tool.get("function", {}).get("name") in allowed]
+
+
 # ============================================================
 # TOOL ACTION TRACKING
 # ============================================================
@@ -1320,7 +1328,8 @@ class LiteLLMConnector(LLMConnector):
         self, 
         prompt: str, 
         history: list[dict], 
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        allowed_tool_names: Optional[list[str]] = None,
     ) -> str:
         """Call LiteLLM with tool support."""
         
@@ -1334,11 +1343,6 @@ class LiteLLMConnector(LLMConnector):
         
         # System prompt (includes stats via build_system_context)
         sys_content = system_prompt or self._load_system_prompt(prompt)
-        # Inject conversation context: summary + last 5 messages so the model remembers the thread
-        from llm.prompts import build_conversation_context
-        conv_context = build_conversation_context(history)
-        if conv_context:
-            sys_content = sys_content + "\n\n---\n" + conv_context
         messages.append({"role": "system", "content": sys_content})
         
         # History
@@ -1368,8 +1372,12 @@ class LiteLLMConnector(LLMConnector):
                     "timeout": LLM_TIMEOUT,
                 }
                 if ENABLE_LITELLM_TOOLS:
-                    kwargs["tools"] = TOOLS
-                    kwargs["tool_choice"] = "auto"
+                    tools = _filter_tools(allowed_tool_names)
+                    if tools:
+                        kwargs["tools"] = tools
+                        kwargs["tool_choice"] = "auto"
+                    else:
+                        kwargs["tool_choice"] = "none"
                 else:
                     kwargs["tool_choice"] = "none"
                 

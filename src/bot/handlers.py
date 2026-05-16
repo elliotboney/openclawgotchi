@@ -8,6 +8,7 @@ import os
 import tempfile
 import base64
 import asyncio
+from dataclasses import dataclass
 from pathlib import Path
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,7 +18,8 @@ from telegram.ext import ContextTypes
 from db.memory import (
     save_message, get_history, clear_history, get_message_count,
     save_user, add_fact, search_facts, get_recent_facts,
-    save_pending_task, get_connection, save_feedback_event
+    save_pending_task, get_connection, save_feedback_event,
+    get_active_task, set_active_task,
 )
 from hardware.display import parse_and_execute_commands, error_screen, show_face
 from hardware.system import get_stats
@@ -44,6 +46,12 @@ from llm.prompts import build_system_context, build_vault_context
 
 log = logging.getLogger(__name__)
 
+
+@dataclass
+class ImageProcessingResult:
+    reasoning_text: str
+    chat_summary: str
+
 # --- Voice Handling Helpers ---
 
 async def _keep_typing(chat_id: int, context: ContextTypes.DEFAULT_TYPE, stop_event: asyncio.Event) -> None:
@@ -57,6 +65,64 @@ async def _keep_typing(chat_id: int, context: ContextTypes.DEFAULT_TYPE, stop_ev
             await asyncio.wait_for(stop_event.wait(), timeout=4.0)
         except asyncio.TimeoutError:
             continue
+
+
+def _normalize_ws(text: str) -> str:
+    """Collapse whitespace so task summaries stay compact and stable."""
+    return re.sub(r"\s+", " ", (text or "")).strip()
+
+
+def _summarize_active_task(user_text: str) -> str | None:
+    """
+    Build a lightweight summary of the chat's current focus.
+    Keep this language-agnostic and derived from the user's own text.
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return None
+
+    if text.startswith("/"):
+        return None
+
+    attachment_match = re.match(r"^\[User attached file: ([^\]]+)\]", text)
+    if attachment_match:
+        summary = f"Working with attachment: {attachment_match.group(1).strip()}"
+        return summary[:200]
+
+    normalized = _normalize_ws(text)
+    if len(normalized) < 24:
+        return None
+
+    return normalized[:200]
+
+
+def _build_continuity_prompt(active_task: str | None) -> str:
+    """Add soft continuity context without forcing the next reply."""
+    if not active_task:
+        return ""
+    return (
+        "\n## Ongoing Task Context\n"
+        f"Recent chat focus: {active_task}\n"
+        "Use this only as continuity context. Override it immediately if the user's new message clearly changes direction.\n"
+    )
+
+
+async def _download_telegram_file(file_obj, *, suffix: str, label: str) -> str:
+    """Download a Telegram file and verify that it landed on disk."""
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        tmp_path = tmp.name
+
+    try:
+        await file_obj.download_to_drive(tmp_path)
+        if not os.path.exists(tmp_path):
+            raise RuntimeError(f"{label} download finished without a local file")
+        if os.path.getsize(tmp_path) <= 0:
+            raise RuntimeError(f"{label} download produced an empty file")
+        return tmp_path
+    except Exception:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        raise
 
 async def transcribe_voice(file_path: str) -> str:
     """Transcribe audio file using OpenAI Whisper."""
@@ -158,8 +224,8 @@ async def process_image_file(
     conv_id: int,
     mime_type: str = "image/jpeg",
     source: str = "telegram",
-) -> str:
-    """Analyze an image, save it to the vault, and return a user-facing summary."""
+) -> ImageProcessingResult:
+    """Analyze an image, save it to the vault, and return reasoning + visible summary."""
     from memory.vault import save_attachment, capture_note
 
     vision_prompt = (
@@ -210,25 +276,42 @@ async def process_image_file(
     save_message(conv_id, "user", f"[User sent an image with caption: {caption or 'none'}]")
     save_message(conv_id, "assistant", history_entry)
 
-    msg = (
-        f"📸 *Captured to Vault: {result.title}*\n\n"
-        f"```\n{analysis_text}\n```\n"
-        f"_Image saved to attachments/_"
+    preview = analysis_text[:900] + ("..." if len(analysis_text) > 900 else "")
+    chat_summary = (
+        f"📸 *I see this in the image:*\n\n"
+        f"```\n{preview}\n```"
+    )
+
+    reasoning_text = (
+        "[IMAGE CONTEXT]\n"
+        f"User comment/caption: {caption or '(none)'}\n"
+        f"Visual analysis: {analysis_text}\n\n"
+        "Use the user comment/caption together with the visual analysis to answer the user's request. "
+        "If the caption asks for an action, tell them what to do next based on the image. "
+        "If there is no explicit request, give a brief description and one useful next step. "
+        "Do not assume who the speaker or recipient is unless the image text states it clearly. "
+        "Do not reply with only the raw visual description."
     )
     show_face(mood="smart", text="I see it!")
-    return msg
+    return ImageProcessingResult(reasoning_text=reasoning_text, chat_summary=chat_summary)
 
 
-async def _process_image_message(update: Update, local_file_path: str, mime_type: str = "image/jpeg") -> None:
+async def _process_image_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    local_file_path: str,
+    mime_type: str = "image/jpeg",
+) -> None:
     """Analyze an image, save it to the vault, and reply safely."""
-    msg = await process_image_file(
+    image_result = await process_image_file(
         local_file_path=local_file_path,
         caption=update.message.caption or "",
         conv_id=update.effective_chat.id,
         mime_type=mime_type,
         source="telegram",
     )
-    await send_long_message(update, msg)
+    await send_long_message(update, image_result.chat_summary, parse_mode="Markdown")
+    await handle_message(update, context, override_text=image_result.reasoning_text)
 
 # Patterns that signal the user is unhappy with the bot's response
 _NEGATIVE_PATTERNS = (
@@ -278,6 +361,104 @@ def _should_enable_memo_mode(user_text: str, classification) -> bool:
         return True
 
     return False
+
+
+def _should_answer_first(user_text: str, classification) -> bool:
+    """
+    Prefer answering over memory capture for questions, direct commands,
+    and short follow-up corrections.
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return False
+
+    kind = getattr(classification, "kind", "")
+    if kind in {"question", "direct_command"}:
+        return True
+
+    if "?" in text:
+        return True
+
+    structured = (
+        "\n" in text
+        or text.startswith(("-", "*", "1.", "2.", "3."))
+        or len(text) >= 120
+    )
+    if not structured and len(text) <= 80:
+        return True
+
+    return False
+
+
+def _should_allow_auto_remember(user_text: str, classification, memo_mode: bool) -> bool:
+    """
+    Keep parsed REMEMBER actions on a tight leash.
+    They should not fire during ordinary Q&A.
+    """
+    text = (user_text or "").strip()
+    if not text:
+        return False
+
+    if text.startswith("[IMAGE CONTEXT]") or text.startswith("[DOCUMENT ATTACHED:") or text.startswith("[User attached file:"):
+        return False
+
+    if memo_mode:
+        return True
+
+    kind = getattr(classification, "kind", "")
+    if kind in {"question", "direct_command", "casual"}:
+        return False
+
+    lowered = text.lower()
+    explicit_markers = ("save this", "remember this", "capture this", "write this to vault")
+    return any(marker in lowered for marker in explicit_markers)
+
+
+def _last_assistant_message(history: list[dict]) -> str:
+    for msg in reversed(history or []):
+        if msg.get("role") == "assistant":
+            return str(msg.get("content", "")).strip()
+    return ""
+
+
+def _looks_like_followup(user_text: str, history: list[dict]) -> bool:
+    text = (user_text or "").strip()
+    if not text or not _last_assistant_message(history):
+        return False
+    if "\n" in text:
+        return False
+    if len(text) <= 120:
+        return True
+    return False
+
+
+def _build_reply_mode_prompt(user_text: str, history: list[dict]) -> str:
+    prompt = (
+        "\n---\n## Reply Mode\n"
+        "Answer the user's request directly.\n"
+        "Do not save to vault, do not use remember_fact, and do not emit REMEMBER: unless the user explicitly asks to save something.\n"
+        "If the message includes an attachment summary, use it to answer the request first.\n"
+        "Do not assume roles, ownership, or intent details that were not clearly stated.\n"
+    )
+    if _looks_like_followup(user_text, history):
+        previous = _last_assistant_message(history)[:600]
+        prompt += (
+            "\n## Follow-up Handling\n"
+            "The latest user message is likely a follow-up or correction to your previous answer.\n"
+            "Stay on the same task, repair the last answer, and answer only the narrow ask now.\n"
+            f"Previous assistant answer:\n{previous}\n"
+        )
+    return prompt
+
+
+def _allowed_tool_names_for_mode(memo_mode: bool) -> list[str] | None:
+    if memo_mode:
+        return None
+
+    blocked = {"remember_fact", "vault_write", "log_change", "git_command"}
+    from llm.litellm_connector import TOOL_MAP
+
+    return [name for name in TOOL_MAP.keys() if name not in blocked]
 
 
 # --- Command Handlers ---
@@ -811,11 +992,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Download voice file
         voice = update.message.voice
         file = await context.bot.get_file(voice.file_id)
-        
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
-            await file.download_to_drive(tmp.name)
-            tmp_path = tmp.name
+        tmp_path = await _download_telegram_file(file, suffix=".ogg", label="voice attachment")
         
         # Transcribe
         text = await transcribe_voice(tmp_path)
@@ -859,11 +1036,8 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         # 1. Download the highest resolution photo
         photo_file = await update.message.photo[-1].get_file()
-
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
-            await photo_file.download_to_drive(tmp.name)
-            tmp_path = tmp.name
-        await _process_image_message(update, tmp_path, "image/jpeg")
+        tmp_path = await _download_telegram_file(photo_file, suffix=".jpg", label="photo attachment")
+        await _process_image_message(update, context, tmp_path, "image/jpeg")
 
     except Exception as e:
         log.error(f"Photo handling failed: {e}")
@@ -893,11 +1067,8 @@ async def handle_image_document(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         image_file = await document.get_file()
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            await image_file.download_to_drive(tmp.name)
-            tmp_path = tmp.name
-
-        await _process_image_message(update, tmp_path, document.mime_type)
+        tmp_path = await _download_telegram_file(image_file, suffix=suffix, label="image document")
+        await _process_image_message(update, context, tmp_path, document.mime_type)
     except Exception as e:
         log.error(f"Image document handling failed: {e}")
         await update.message.reply_text(f"Error processing image: {e}")
@@ -917,6 +1088,7 @@ _TEXT_DOCUMENT_MIME_TYPES = {
     "application/xml",
     "application/javascript",
     "application/x-yaml",
+    "application/pdf",
 }
 _MAX_TEXT_DOCUMENT_BYTES = 512 * 1024
 
@@ -929,6 +1101,23 @@ def _is_text_document(file_name: str, mime_type: str) -> bool:
         or mime in _TEXT_DOCUMENT_MIME_TYPES
         or any(mime.startswith(prefix) for prefix in _TEXT_DOCUMENT_MIME_PREFIXES)
     )
+
+
+def _extract_pdf_text(file_path: str) -> str:
+    """Extract plain text from a PDF. Returns an empty string when no text layer exists."""
+    try:
+        from pypdf import PdfReader
+    except ImportError as e:
+        raise RuntimeError("PDF support is not installed. Install dependencies from requirements.txt.") from e
+
+    reader = PdfReader(file_path)
+    chunks: list[str] = []
+    for page in reader.pages:
+        text = page.extract_text() or ""
+        text = text.strip()
+        if text:
+            chunks.append(text)
+    return "\n\n".join(chunks).strip()
 
 
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -947,10 +1136,11 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     file_name = document.file_name or "document"
     mime_type = document.mime_type or "application/octet-stream"
+    is_pdf = Path(file_name).suffix.lower() == ".pdf" or mime_type.lower() == "application/pdf"
 
     if not _is_text_document(file_name, mime_type):
         await update.message.reply_text(
-            f"I got `{file_name}`, but I currently only read text documents like `.md`, `.txt`, `.json`, `.py`, `.yaml`.",
+            f"I got `{file_name}`, but I currently only read text documents like `.md`, `.txt`, `.json`, `.py`, `.yaml`, and text-based PDFs.",
             parse_mode="Markdown",
         )
         return
@@ -969,19 +1159,30 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         remote_file = await document.get_file()
         suffix = Path(file_name).suffix or ".txt"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
-            await remote_file.download_to_drive(tmp.name)
-            tmp_path = tmp.name
+        tmp_path = await _download_telegram_file(
+            remote_file,
+            suffix=suffix,
+            label=f"document {file_name}",
+        )
 
-        raw_bytes = Path(tmp_path).read_bytes()
-        text = raw_bytes.decode("utf-8", errors="replace").strip()
+        if is_pdf:
+            text = _extract_pdf_text(tmp_path)
+        else:
+            raw_bytes = Path(tmp_path).read_bytes()
+            text = raw_bytes.decode("utf-8", errors="replace").strip()
 
         # Stop typing before calling handle_message, as handle_message starts its own typing task
         stop_typing.set()
         await typing_task
 
         if not text:
-            await update.message.reply_text(f"`{file_name}` looks empty.", parse_mode="Markdown")
+            if is_pdf:
+                await update.message.reply_text(
+                    f"`{file_name}` has no readable text layer. It may be a scanned PDF.",
+                    parse_mode="Markdown",
+                )
+            else:
+                await update.message.reply_text(f"`{file_name}` looks empty.", parse_mode="Markdown")
             return
 
         if len(text) > 12000:
@@ -1025,6 +1226,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
     
     conv_id = chat.id
     sender = get_sender_name(user)
+    active_task_summary = _summarize_active_task(user_text)
     
     # Fire message hook (for logging)
     run_hook(HookEvent(
@@ -1075,6 +1277,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
             return  # Nothing to process
     
     save_user(user.id, user.username or "", user.first_name or "", user.last_name or "")
+    if active_task_summary:
+        set_active_task(conv_id, active_task_summary)
 
     # Start typing immediately so pre-LLM steps are also covered.
     await chat.send_action(ChatAction.TYPING)
@@ -1093,6 +1297,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
         # Keep personality for small talk, but only switch into vault-capture mode
         # when the user clearly intends to save a note or the classifier is highly confident.
         memo_mode = _should_enable_memo_mode(user_text, classification)
+        if _should_answer_first(user_text, classification):
+            memo_mode = False
 
     # Check if memory flush needed (use full history length, before optimization)
     flush_prompt = check_and_inject_flush(history)
@@ -1114,6 +1320,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
     litellm_connector.set_cron_target_chat_id(conv_id)
     router = get_router()
     system_prompt = None
+    continuity_prompt = _build_continuity_prompt(get_active_task(conv_id))
+    allowed_tool_names = _allowed_tool_names_for_mode(memo_mode)
     if memo_mode:
         system_prompt = build_system_context(user_text) + "\n---\n" + build_vault_context() + "\n\n"
         system_prompt += (
@@ -1124,11 +1332,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
             "Do not invent fixed categories. Use free-form project/topic/tags/links.\n"
             "After capture, keep the reply brief and mention what was saved.\n"
         )
+        system_prompt += continuity_prompt
+    else:
+        system_prompt = build_system_context(user_text)
+        system_prompt += _build_reply_mode_prompt(user_text, history)
+        system_prompt += continuity_prompt
     
     try:
         # lock handled internally by connector
         log.info(f"[{sender}] -> {user_text[:80]}")
-        response, connector = await router.call(user_text, history, system_prompt=system_prompt)
+        response, connector = await router.call(
+            user_text,
+            history,
+            system_prompt=system_prompt,
+            allowed_tool_names=allowed_tool_names,
+        )
         log.info(f"[{sender}] <- [{connector}] {response[:80]}")
         
         # Check for error response (e.g. from LiteLLM)
@@ -1152,7 +1370,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
             show_face(mood="happy", text=clean_text[:50] if clean_text else "...")
         
         # Execute memory command
-        if cmds.get("remember"):
+        if cmds.get("remember") and _should_allow_auto_remember(user_text, classification, memo_mode):
             add_fact(cmds["remember"], "auto_memory")
             log.info(f"Auto-remembered: {cmds['remember']}")
         
@@ -1170,7 +1388,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
         
         # Action confirmations for parsed commands (not tools)
         cmd_notes = []
-        if cmds.get("remember"):
+        if cmds.get("remember") and _should_allow_auto_remember(user_text, classification, memo_mode):
             cmd_notes.append(f"🧠 remembered: \"{cmds['remember'][:40]}\"")
         if cmd_notes:
             clean_text += "\n\n```\n🔧 " + "\n  ".join(cmd_notes) + "\n```"
@@ -1197,7 +1415,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE, ove
             from db.stats import on_knowledge_capture
             on_knowledge_capture()
         # Also count parsed commands (REMEMBER:) as tool-like actions
-        elif cmds.get("remember"):
+        elif cmds.get("remember") and _should_allow_auto_remember(user_text, classification, memo_mode):
             on_tool_use(1)
             
     except RateLimitError:
