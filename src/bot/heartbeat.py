@@ -149,18 +149,28 @@ async def send_heartbeat(context):
     """
     run_hook(HookEvent(event_type="heartbeat", action="start"))
 
-    # 1. Apply auto-mood first
+    # 1. Conservative dreaming pass before the main heartbeat flow.
+    try:
+        from memory.knowledge import run_dreaming
+        from config import BOT_NAME
+        dreaming_result = await run_dreaming(BOT_NAME, OWNER_NAME or "the owner")
+        if dreaming_result.get("captures") or dreaming_result.get("warnings"):
+            log.info(f"Dreaming: {dreaming_result}")
+    except Exception as e:
+        log.warning(f"Dreaming failed: {e}")
+
+    # 2. Apply auto-mood first
     mood, mood_text = apply_auto_mood()
 
-    # 2. Award heartbeat XP
+    # 3. Award heartbeat XP
     on_heartbeat()
     status_bar = get_status_bar()
     log.info(f"Heartbeat XP awarded. {status_bar}")
 
-    # 3. Process pending queue
+    # 4. Process pending queue
     await process_pending_tasks(context)
 
-    # 4. Summarize recent conversations (LLM)
+    # 5. Summarize recent conversations (LLM)
     try:
         from memory.flush import get_chats_with_recent_messages, summarize_and_save
         recent_chats = get_chats_with_recent_messages()
@@ -173,7 +183,7 @@ async def send_heartbeat(context):
     except Exception as e:
         log.warning(f"Conversation summarization failed: {e}")
 
-    # 4b. Knowledge crystallization (autonomous — runs once per 24h)
+    # 5b. Knowledge crystallization (autonomous — runs once per 24h)
     crystallized_count = 0
     try:
         from memory.knowledge import crystallize_knowledge
@@ -184,7 +194,7 @@ async def send_heartbeat(context):
     except Exception as e:
         log.warning(f"Knowledge crystallization failed: {e}")
     
-    # 5. Load heartbeat template
+    # 6. Load heartbeat template
     hb_path = WORKSPACE_DIR / "HEARTBEAT.md"
     if not hb_path.exists():
         log.warning(f"HEARTBEAT.md not found at {hb_path}")
@@ -192,7 +202,7 @@ async def send_heartbeat(context):
     
     template = hb_path.read_text()
     
-    # 6. Load SOUL + IDENTITY + TRAITS for self-awareness during reflection
+    # 7. Load SOUL + IDENTITY + TRAITS for self-awareness during reflection
     soul_parts = []
     soul_path = WORKSPACE_DIR / "SOUL.md"
     if soul_path.exists():
@@ -206,7 +216,7 @@ async def send_heartbeat(context):
         if traits_text:
             soul_parts.append(f"## Your self-discoveries (TRAITS)\n{traits_text}")
     
-    # 7. Build reflection prompt — focus on inner monologue, not stats
+    # 8. Build reflection prompt — focus on inner monologue, not stats
     from config import BOT_NAME
     prompt = ""
 
@@ -295,7 +305,7 @@ async def send_heartbeat(context):
 
     prompt += "\n\n[Reflect. Think out loud. Then FACE: and SAY:]"
     
-    # 7. Call LLM
+    # 9. Call LLM
     router = get_router()
     
     if router.lock.locked() and not router.force_lite:

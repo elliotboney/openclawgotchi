@@ -6,7 +6,9 @@ Reads recent logs + facts, extracts structured insights, saves to
 .workspace/knowledge/ directory (organized by category).
 """
 
+import json
 import logging
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -16,6 +18,9 @@ log = logging.getLogger(__name__)
 
 KNOWLEDGE_DIR = WORKSPACE_DIR / "knowledge"
 CRYSTALLIZE_INTERVAL_HOURS = 24
+DREAMING_MARKER = KNOWLEDGE_DIR / ".last_dreaming"
+DREAMING_MAX_MESSAGES = 80
+DREAMING_MAX_CAPTURES = 2
 
 CRYSTALLIZE_PROMPT = """You are {bot_name}. Review your recent experiences and extract real knowledge.
 
@@ -48,6 +53,50 @@ INSIGHT: open-question — What does he actually want when he says "maybe"? Enco
 Output ONLY the INSIGHT lines. Nothing else."""
 
 
+DREAMING_PROMPT = """You are {bot_name}. Run a conservative pre-heartbeat dreaming pass.
+
+Recent messages since the last dreaming run:
+{messages}
+
+Recent note titles:
+{recent_notes}
+
+Current vault integrity warnings:
+{warnings}
+
+---
+
+Goal:
+Check whether any durable project knowledge from those recent messages is still missing from the vault.
+
+Rules:
+- Be conservative.
+- Capture only durable knowledge: decisions, findings, plans, preferences, approved drafts, technical conclusions, or useful summaries of uploaded documents.
+- Ignore casual chat, pings, filler, and ambiguous fragments.
+- Do NOT propose renames, deletions, merges, rewrites, taxonomy changes, or large cleanup.
+- At most {max_captures} captures.
+- If unsure whether something is already in the vault, prefer skipping it.
+- Housekeeping is warnings-only in this phase. No structural vault edits.
+
+Return ONLY valid JSON:
+{{
+  "captures": [
+    {{
+      "title": "short title",
+      "raw_text": "source material",
+      "summary": "1-2 sentence summary",
+      "note_type": "memo|research|issue|reference|asset|plan|insight",
+      "project": "project slug or empty",
+      "topic": "topic slug or empty",
+      "tags": ["type/...", "area/..."],
+      "confidence": 0.0
+    }}
+  ],
+  "warnings": ["short warning", "..."]
+}}
+"""
+
+
 def should_crystallize() -> bool:
     """Check if 24h have passed since last crystallization."""
     marker = KNOWLEDGE_DIR / ".last_crystallized"
@@ -64,6 +113,103 @@ def mark_crystallized():
     """Record crystallization timestamp."""
     KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
     (KNOWLEDGE_DIR / ".last_crystallized").write_text(datetime.now().isoformat())
+
+
+def _get_last_dreaming_time() -> datetime:
+    if not DREAMING_MARKER.exists():
+        return datetime.now() - timedelta(hours=24)
+    try:
+        return datetime.fromisoformat(DREAMING_MARKER.read_text().strip())
+    except Exception:
+        return datetime.now() - timedelta(hours=24)
+
+
+def _mark_dreaming() -> None:
+    KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
+    DREAMING_MARKER.write_text(datetime.now().isoformat())
+
+
+def _recent_note_titles(limit: int = 12) -> list[str]:
+    notes_dir = KNOWLEDGE_DIR / "notes"
+    if not notes_dir.exists():
+        return []
+    paths = sorted(notes_dir.glob("*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
+    titles: list[str] = []
+    for path in paths[:limit]:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        match = re.search(r"^#\s+(.+)$", text, flags=re.MULTILINE)
+        titles.append(match.group(1).strip() if match else path.stem)
+    return titles
+
+
+def _dreaming_warnings(limit: int = 5) -> list[str]:
+    notes_dir = KNOWLEDGE_DIR / "notes"
+    if not notes_dir.exists():
+        return []
+
+    warnings: list[str] = []
+    title_map: dict[str, list[str]] = {}
+
+    for path in sorted(notes_dir.glob("*.md")):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+
+        status_match = re.search(r'^status:\s*"?(.*?)"?$', text, flags=re.MULTILINE)
+        status = status_match.group(1).strip() if status_match else ""
+        status_tags = re.findall(r'^\s*-\s*"?(status/[^"\n]+)"?$', text, flags=re.MULTILINE)
+        if status and status_tags and f"status/{status}" not in status_tags:
+            warnings.append(f"{path.name}: status={status} but tags={','.join(status_tags)}")
+
+        title_match = re.search(r"^#\s+(.+)$", text, flags=re.MULTILINE)
+        if title_match:
+            title = title_match.group(1).strip().lower()
+            title_map.setdefault(title, []).append(path.name)
+
+    for title, names in title_map.items():
+        if len(names) > 1:
+            warnings.append(f"duplicate title: {title} ({', '.join(names[:3])})")
+
+    return warnings[:limit]
+
+
+def _title_exists(title: str) -> bool:
+    notes_dir = KNOWLEDGE_DIR / "notes"
+    if not notes_dir.exists():
+        return False
+    wanted = title.strip().lower()
+    for path in notes_dir.glob("*.md"):
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            continue
+        match = re.search(r"^#\s+(.+)$", text, flags=re.MULTILINE)
+        current = match.group(1).strip().lower() if match else path.stem.lower()
+        if current == wanted:
+            return True
+    return False
+
+
+def _parse_dreaming_json(text: str) -> tuple[list[dict], list[str]]:
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if not match:
+        return [], []
+    try:
+        data = json.loads(match.group(0))
+    except Exception:
+        return [], []
+
+    captures = data.get("captures", [])
+    if not isinstance(captures, list):
+        captures = []
+    warnings = data.get("warnings", [])
+    if not isinstance(warnings, list):
+        warnings = []
+    return captures, [str(w).strip()[:200] for w in warnings if str(w).strip()]
 
 
 def parse_insight_lines(text: str) -> list[dict]:
@@ -317,3 +463,111 @@ async def crystallize_knowledge(bot_name: str, owner_name: str) -> int:
     except Exception as e:
         log.error(f"Crystallization LLM call failed: {e}")
         return 0
+
+
+async def run_dreaming(bot_name: str, owner_name: str) -> dict:
+    """
+    Conservative pre-heartbeat dreaming pass.
+    Reviews only new messages since the last dreaming run and optionally captures
+    at most a couple of clearly missing notes.
+    """
+    from db.memory import get_messages_since
+    from memory.flush import write_to_daily_log
+    from memory.vault import capture_note
+
+    del owner_name  # reserved for future prompt tuning
+
+    last_dreaming = _get_last_dreaming_time()
+    recent_messages = get_messages_since(last_dreaming.isoformat(), limit=DREAMING_MAX_MESSAGES)
+
+    if not recent_messages:
+        _mark_dreaming()
+        return {"captures": 0, "warnings": 0, "reason": "no new messages"}
+
+    message_lines = []
+    for msg in recent_messages:
+        role = msg.get("role", "unknown")
+        chat_id = msg.get("chat_id", 0)
+        text = str(msg.get("content", "")).strip()
+        if not text:
+            continue
+        message_lines.append(f"[{msg.get('timestamp', '')}] chat={chat_id} {role}: {text[:500]}")
+
+    if not message_lines:
+        _mark_dreaming()
+        return {"captures": 0, "warnings": 0, "reason": "no non-empty messages"}
+
+    prompt = DREAMING_PROMPT.format(
+        bot_name=bot_name,
+        messages="\n".join(message_lines),
+        recent_notes="\n".join(f"- {title}" for title in _recent_note_titles()) or "(none)",
+        warnings="\n".join(f"- {w}" for w in _dreaming_warnings()) or "(none)",
+        max_captures=DREAMING_MAX_CAPTURES,
+    )
+
+    captures_applied = 0
+    warnings_logged: list[str] = []
+
+    try:
+        from litellm import acompletion
+        from config import DEFAULT_LITE_PRESET, LLM_PRESETS
+
+        preset = LLM_PRESETS.get(DEFAULT_LITE_PRESET, LLM_PRESETS["glm"])
+        kwargs = dict(
+            model=preset["model"],
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=900,
+            temperature=0.2,
+        )
+        if preset.get("api_base"):
+            kwargs["api_base"] = preset["api_base"]
+
+        response = await acompletion(**kwargs)
+        text = (response.choices[0].message.content or "").strip()
+        captures, warnings = _parse_dreaming_json(text)
+        warnings_logged = warnings[:5]
+
+        for item in captures[:DREAMING_MAX_CAPTURES]:
+            title = str(item.get("title", "")).strip()[:120]
+            raw_text = str(item.get("raw_text", "")).strip()[:4000]
+            summary = str(item.get("summary", "")).strip()[:600]
+            note_type = str(item.get("note_type", "memo")).strip()[:40] or "memo"
+            project = str(item.get("project", "")).strip()[:80]
+            topic = str(item.get("topic", "")).strip()[:80]
+            tags = item.get("tags", [])
+            try:
+                confidence = float(item.get("confidence", 0.0) or 0.0)
+            except Exception:
+                confidence = 0.0
+
+            if confidence < 0.80 or not title or not raw_text:
+                continue
+            if _title_exists(title):
+                continue
+
+            capture_note(
+                title=title,
+                raw_text=raw_text,
+                summary=summary,
+                source="dreaming",
+                note_type=note_type,
+                project=project,
+                topic=topic,
+                tags=tags if isinstance(tags, list) else [],
+            )
+            captures_applied += 1
+
+        log_line = f"[Dreaming] reviewed={len(message_lines)} captures={captures_applied}"
+        if warnings_logged:
+            log_line += " warnings=" + " | ".join(warnings_logged[:3])
+        write_to_daily_log(log_line)
+        _mark_dreaming()
+        return {
+            "captures": captures_applied,
+            "warnings": len(warnings_logged),
+            "reviewed": len(message_lines),
+        }
+
+    except Exception as e:
+        log.error(f"Dreaming failed: {e}")
+        return {"captures": 0, "warnings": 0, "error": str(e)}

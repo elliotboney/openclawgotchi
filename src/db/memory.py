@@ -84,6 +84,15 @@ def init_db():
             surfaced INTEGER DEFAULT 0
         )
     """)
+
+    # Lightweight per-chat state for continuity across long runs / restarts.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_state (
+            chat_id INTEGER PRIMARY KEY,
+            active_task TEXT,
+            updated_at TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -137,6 +146,26 @@ def get_message_count(user_id: int) -> int:
     ).fetchone()[0]
     conn.close()
     return count
+
+
+def get_messages_since(timestamp: str, limit: int = 100) -> list[dict]:
+    """Get recent messages across chats since the given ISO timestamp."""
+    conn = get_connection()
+    rows = conn.execute(
+        """
+        SELECT user_id, role, content, timestamp
+        FROM messages
+        WHERE timestamp > ?
+        ORDER BY id ASC
+        LIMIT ?
+        """,
+        (timestamp, limit),
+    ).fetchall()
+    conn.close()
+    return [
+        {"chat_id": r[0], "role": r[1], "content": r[2], "timestamp": r[3]}
+        for r in rows
+    ]
 
 
 # --- User Info ---
@@ -279,3 +308,33 @@ def mark_feedback_surfaced(ids: list[int]):
     )
     conn.commit()
     conn.close()
+
+
+# --- Conversation State ---
+
+def set_active_task(chat_id: int, active_task: str):
+    """Persist the current task focus for a chat."""
+    conn = get_connection()
+    conn.execute(
+        """
+        INSERT INTO conversation_state (chat_id, active_task, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(chat_id) DO UPDATE SET
+            active_task = excluded.active_task,
+            updated_at = excluded.updated_at
+        """,
+        (chat_id, active_task[:500], datetime.now().isoformat()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_active_task(chat_id: int) -> Optional[str]:
+    """Fetch the latest task focus for a chat."""
+    conn = get_connection()
+    row = conn.execute(
+        "SELECT active_task FROM conversation_state WHERE chat_id = ?",
+        (chat_id,),
+    ).fetchone()
+    conn.close()
+    return row[0] if row and row[0] else None

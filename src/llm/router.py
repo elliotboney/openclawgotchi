@@ -28,7 +28,8 @@ class LLMRouter:
         self, 
         prompt: str, 
         history: list[dict],
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        allowed_tool_names: Optional[list[str]] = None,
     ) -> tuple[str, str]:
         """
         Call LLM based on current mode.
@@ -41,7 +42,7 @@ class LLMRouter:
         if self.force_lite:
             if not self.litellm.is_available():
                 raise LLMError("LiteLLM not available")
-            response = await self.litellm.call(prompt, history, system_prompt)
+            response = await self.litellm.call(prompt, history, system_prompt, allowed_tool_names)
             return response, "litellm"
         
         # PRO MODE: Claude only, no fallback
@@ -49,7 +50,7 @@ class LLMRouter:
             raise LLMError("Claude CLI not found. Install it or use /pro for Lite mode.")
         
         # Claude call - let RateLimitError bubble up for queueing
-        response = await self.claude.call(prompt, history, system_prompt)
+        response = await self.claude.call(prompt, history, system_prompt, allowed_tool_names)
         return response, "claude"
     
     def toggle_lite_mode(self) -> bool:

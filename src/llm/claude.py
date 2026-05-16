@@ -34,7 +34,8 @@ class ClaudeConnector(LLMConnector):
         self, 
         prompt: str, 
         history: list[dict], 
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        allowed_tool_names: Optional[list[str]] = None,
     ) -> str:
         """Call Claude CLI."""
         
@@ -48,7 +49,7 @@ class ClaudeConnector(LLMConnector):
         self, 
         user_message: str, 
         history: list[dict],
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
     ) -> str:
         """
         Build prompt for Claude CLI.
@@ -64,12 +65,6 @@ class ClaudeConnector(LLMConnector):
         
         # 2. System Stats (Dynamic context)
         parts.append(f"\n[CURRENT SYSTEM STATUS]\n{get_stats_string()}")
-        
-        # 2b. Conversation context (summary + last 5 messages)
-        from llm.prompts import build_conversation_context
-        conv_context = build_conversation_context(history)
-        if conv_context:
-            parts.append(f"\n{conv_context}")
         
         # 3. History
         history_text = build_history_prompt(history)

@@ -16,7 +16,8 @@ class LLMConnector(ABC):
         self, 
         prompt: str, 
         history: list[dict], 
-        system_prompt: Optional[str] = None
+        system_prompt: Optional[str] = None,
+        allowed_tool_names: Optional[list[str]] = None,
     ) -> str:
         """
         Call the LLM with a prompt.
@@ -25,6 +26,7 @@ class LLMConnector(ABC):
             prompt: User message
             history: Conversation history [{"role": "user"|"assistant", "content": "..."}]
             system_prompt: Optional system prompt override
+            allowed_tool_names: Optional tool allow-list for connectors with tool support
             
         Returns:
             LLM response text
