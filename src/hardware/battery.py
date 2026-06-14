@@ -100,6 +100,7 @@ def _percentage_from_voltage(volts: float) -> int:
 
 
 def _waveshare_available() -> bool:
+    """Return True if the Waveshare UPS HAT (INA219) responds on I2C."""
     bus = _open_bus()
     if bus is None:
         return False
@@ -116,6 +117,7 @@ def _waveshare_available() -> bool:
 
 
 def _read_waveshare() -> Optional[BatteryReading]:
+    """Read the Waveshare UPS HAT via INA219 over I2C, or None if unavailable."""
     bus = _open_bus()
     if bus is None:
         return None
@@ -187,10 +189,12 @@ def _pisugar_query(fields: list[str]) -> Optional[dict]:
 
 
 def _pisugar2_available() -> bool:
+    """Return True if pisugar-server answers a battery query over the socket."""
     return _pisugar_query(["battery"]) is not None
 
 
 def _read_pisugar2() -> Optional[BatteryReading]:
+    """Read PiSugar 2 battery state via pisugar-server, or None if unavailable."""
     data = _pisugar_query(
         ["battery", "battery_v", "battery_i", "battery_charging", "battery_power_plugged"]
     )
@@ -223,12 +227,14 @@ def _read_pisugar2() -> Optional[BatteryReading]:
 # --- Public API (dispatches on configured backend) ---
 
 def is_available() -> bool:
+    """Return True if the configured battery HAT is present and responding."""
     if BATTERY_HAT == "pisugar2":
         return _pisugar2_available()
     return _waveshare_available()
 
 
 def read() -> Optional[BatteryReading]:
+    """Read a BatteryReading from the configured backend, or None if unavailable."""
     if BATTERY_HAT == "pisugar2":
         return _read_pisugar2()
     return _read_waveshare()
