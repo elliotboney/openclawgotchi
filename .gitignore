@@ -5,8 +5,9 @@
 # Workspace — bot's personal "soul" (copy from templates/ to customize)
 .workspace/
 
-# External skills (clone separately if needed)
-openclaw-skills/
+# External skills (clone separately if needed) — keep the dir, ignore its contents
+openclaw-skills/*
+!openclaw-skills/.gitkeep
 
 # ===================
 # Python
