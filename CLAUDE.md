@@ -24,8 +24,9 @@ journalctl -u gotchi-bot -f           # live logs
 # Health check (also exposed as the health_check tool / /health command)
 python3 src/utils/doctor.py
 
-./harden.sh    # optional Pi security hardening
-./sync.sh      # vault sync helper
+./harden.sh           # optional Pi security hardening
+./sync.sh up|down     # rsync code local <-> Pi (restarts bot on `up`)
+./sync_skills.sh up|down   # rsync gotchi-skills/ + openclaw-skills/ (the latter is gitignored)
 ```
 
 There is **no test suite** and **no linter config**. Verify changes by running the bot and exercising flows over Telegram, or by running `doctor.py`. `python3 -c "import ast; ast.parse(open('file.py').read())"` (the same idea as the `check_syntax` tool) is the cheapest correctness gate before a restart.
@@ -56,12 +57,20 @@ Handlers can restrict which tools the model sees via `allowed_tool_names` (e.g. 
 The model emits inline control tags in its text — `FACE: <mood>`, `SAY: <msg>`, `DISPLAY: <text>`, `DM: <msg>`. `src/hardware/display.py::parse_and_execute_commands(response)` strips those tags out of the user-facing reply and drives the E-Ink screen by spawning `src/ui/gotchi_ui.py` as a **separate process** (`_run_display_update`) — isolating the fragile Pillow/SPI rendering from the main loop so a render crash can't take down the bot. 25+ kaomoji moods in `src/ui/faces.py`; custom faces persist in `data/custom_faces.json`.
 
 ### Skills (gated, OpenClaw-style)
-`src/skills/loader.py` reads `SKILL.md` frontmatter from `gotchi-skills/` (active, takes precedence) and `openclaw-skills/` (reference catalog, read-only, often macOS-only). Skills are **gated** by `SkillRequirements` (required bins, env vars, OS). To save RAM, only skills in `CORE_SKILLS` + `ACTIVE_SKILLS` env are parsed at all. The model discovers skills through the prompt and reads `SKILL.md` on demand via `read_skill`/`search_skills`.
+`src/skills/loader.py` reads skill frontmatter from `gotchi-skills/` (active, takes precedence) and `openclaw-skills/` (reference, often macOS-only). Skills are **gated** by `SkillRequirements` (required bins, env vars, OS). To save RAM, only skills in `CORE_SKILLS` + `ACTIVE_SKILLS` env are parsed at all. The model discovers skills through the prompt and reads them on demand via `read_skill`/`search_skills`/`list_skills`.
 
-**Skill discovery is 100% local — there is no OpenClaw registry or network sync.** The code mirrors OpenClaw's directory/`SKILL.md` convention but nothing fetches or refreshes skills:
-- `search_skills` is a substring grep over `openclaw-skills/CATALOG.md` (`search_skill_catalog`); `read_skill` is a plain local file read (`get_skill_content`). Eligibility (`check_requirements`) probes the *local machine* via `shutil.which`/`os.environ`/`platform.system()`.
-- **`gotchi-skills/` is git-tracked** → updated by `git pull` / `scripts/auto_update.sh`. **`openclaw-skills/` is gitignored** (`openclaw-skills/*` except `.gitkeep`, "clone separately if needed") → ships **empty** on a fresh clone and is **never** updated by pull, cron, heartbeat, or `sync.sh`. The only way new OpenClaw skills land is a manual `git clone` into that dir.
-- Consequence on a fresh install: `openclaw-skills/CATALOG.md` may not exist, so `search_skills` returns "Skill catalog not found." (Deferred: optionally auto-clone real OpenClaw skills in `setup.sh`, or generate `CATALOG.md` from whatever's present so search degrades gracefully.)
+**Discovery is 100% local — there is no OpenClaw/ClawHub registry or network sync.** The three discovery tools split cleanly:
+- `list_skills` + `read_skill` scan/read the actual on-disk dirs (work for any installed skill, no catalog needed).
+- `search_skills` greps **`openclaw-skills/CATALOG.md`** only — returns "Skill catalog not found" if absent. `CATALOG.md` is a **hand-curated, Pi-safe install allowlist** (one `- **name** … install: … verdict` bullet per skill). It is **git-tracked via a `.gitignore` exception** (`!openclaw-skills/CATALOG.md`) even though `openclaw-skills/*` is otherwise ignored. Curate by install method: `apt`/prebuilt-ARM ✅, `pip` ⚠️, `go install`/`cargo`/`brew`/`npm` ❌-ish on a Zero.
+
+**ClawHub skill format (load-bearing parser quirks — don't "simplify" these out):** published skills ship `skill.md` **lowercase** (the Pi's FS is case-sensitive) and JSON5-ish frontmatter metadata (opening `{` on the *next* line, trailing commas). `loader.py::_find_skill_md` matches either casing; `parse_skill_frontmatter` handles next-line braces and strips trailing commas before `json.loads`.
+
+**Skill sync:** `openclaw-skills/` ships empty on a fresh clone and is **never auto-refreshed** (gitignored → not carried by `git pull`/`auto_update.sh`; cron/heartbeat don't touch it). `gotchi-skills/` *is* tracked. Move skill dirs between machines with **`./sync_skills.sh up|down`** (rsyncs both dirs to/from the Pi).
+
+**Skill gotchas seen in practice:**
+- ClawHub `requires.bins` can mismatch the *actually-installed* binary, and Go bins land in `~/go/bin` (not on the systemd service PATH). E.g. `go install …/cmd/alexa@latest` produces `alexa`, but the manifest says `alexacli` → symlink it onto PATH: `sudo ln -s ~/go/bin/<bin> /usr/local/bin/<name>`.
+- **Root-needing setup is a manual, owner-run step** — the bot cannot `sudo` (`BLOCKED_EXECUTABLES` + narrow sudoers). Surface the command; don't expect the bot to run it.
+- A skill's `setup.md` may carry an "ask the user first" gate before scaffolding files. The model has been observed **ignoring that gate and bulk-creating dozens of files** off a casual mention. Treat skill-setup as needing explicit in-conversation confirmation.
 
 ### Memory: three layers
 1. **SQLite** (`gotchi.db`, `src/db/memory.py`): `messages` (rolling history, auto-pruned to ~50/chat), `facts` (FTS5 full-text long-term memory), `feedback_events`, `conversation_state`, `user_info`, `pending_tasks`. Stats/XP in `src/db/stats.py`.
