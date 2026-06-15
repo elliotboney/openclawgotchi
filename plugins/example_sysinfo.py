@@ -46,6 +46,14 @@ class SysInfoPlugin(Plugin):
         <ul>{rows}</ul>
         """
 
+    # --- display hook (drawn on the E-Ink, additive; runs in the render subprocess) ---
+    def on_ui_render(self, ui):
+        # A tiny clock tucked into the top-right of the content area. The non-destructive
+        # merge means this can never erase the face/name/status even if it overlaps.
+        clock = time.strftime("%H:%M")
+        w, _ = ui.measure(clock)
+        ui.text((ui.width - w - 3, ui.content_top), clock)
+
     # --- event hook (auto-registered via the bridge) ---
     def on_heartbeat(self, event):
         self.heartbeats += 1

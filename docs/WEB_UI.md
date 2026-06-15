@@ -85,6 +85,9 @@ class HelloPlugin(Plugin):
     def on_webhook(self, path, request):      # serves /plugins/hello/<path>
         return "<h1>my page</h1>"            # return str (HTML), dict (JSON), or (body, status, ctype)
 
+    def on_ui_render(self, ui):               # optional: draw on the E-Ink screen
+        ui.text((ui.width - 30, ui.content_top), "hi")
+
     def on_heartbeat(self, event):            # optional: auto-bridged into the hooks system
         ...
 ```
@@ -95,6 +98,44 @@ class HelloPlugin(Plugin):
   as hooks, so plugins receive the same events as `hooks/`.
 
 See `plugins/example_sysinfo.py` for a complete working plugin.
+
+## Drawing on the E-Ink screen (`on_ui_render`)
+
+This is the pwnagotchi-style superpower that skills can't have: a plugin can **add elements
+to the actual display**. Implement `on_ui_render(self, ui)`; it runs on every frame inside the
+**display render subprocess** (so a buggy plugin can't crash the bot — only its own overlay
+is dropped).
+
+```python
+def on_ui_render(self, ui):
+    clock = time.strftime("%H:%M")
+    w, _ = ui.measure(clock)
+    ui.text((ui.width - w - 3, ui.content_top), clock)   # top-right corner
+```
+
+**It's additive and non-destructive.** Everything you draw lands on a separate overlay that
+is merged with a "darken" composite — your ink fills *blank* pixels but can **never erase**
+the core face, name, or status. You append; you can't clobber. (This is stronger than
+pwnagotchi, which only relies on you picking free coordinates.)
+
+The `ui` object (a `UIContext`) provides:
+
+| Member | Purpose |
+|---|---|
+| `ui.width`, `ui.height` | Panel size (250×122) |
+| `ui.header_h`, `ui.footer_h` | Reserved core bands (14 px each) |
+| `ui.content_top`, `ui.content_bottom` | Safe vertical range for plugin elements |
+| `ui.variant_b` | True on the 3-colour (B) panel |
+| `ui.ctx` | Read-only dict: `mood`, `status_text`, `level`, `battery` |
+| `ui.font`, `ui.font_big` | Small UI font / bubble font |
+| `ui.text(pos, value)` | Draw text |
+| `ui.label(pos, label, value)` | Draw `"label value"` (pwnagotchi LabeledValue style) |
+| `ui.rect(box)`, `ui.line(xy)` | Primitives |
+| `ui.measure(value)` | `(w, h)` of text, for right/centre alignment |
+| `ui.blit(img, pos)` | Paste a 1-bit icon |
+
+Keep `on_ui_render` cheap — it runs in the render path on a Pi Zero. The face is the main
+content; the top-right and the gaps beside it are the usual spots for a small widget.
 
 ## Notes & limits
 

@@ -69,9 +69,24 @@ class Plugin:
         """Return an HTML fragment shown on the dashboard, or None for no card."""
         return None
 
+    def on_ui_render(self, ui: Any) -> None:
+        """
+        Draw extra elements on the E-Ink screen (pwnagotchi-style, additive).
+
+        Runs inside the display render subprocess on every frame. `ui` is a UIContext
+        exposing text()/label()/rect()/line()/measure()/blit(), layout metrics
+        (width/height/content_top/content_bottom), and ui.ctx (mood, status, level,
+        battery). Whatever you draw is merged non-destructively — you can add ink to
+        blank areas but cannot erase the core face/name/status. Keep it cheap.
+        """
+
     def has_page(self) -> bool:
         """Whether this plugin exposes a clickable page at /plugins/<name>/."""
         return type(self).on_webhook is not Plugin.on_webhook
+
+    def has_ui(self) -> bool:
+        """Whether this plugin draws on the E-Ink screen."""
+        return type(self).on_ui_render is not Plugin.on_ui_render
 
     def on_webhook(self, path: str, request: Any) -> Any:
         """
@@ -159,3 +174,46 @@ def get_plugins() -> dict[str, Plugin]:
 
 def get_plugin(name: str) -> Optional[Plugin]:
     return _plugins.get(name)
+
+
+def discover_render_plugins() -> list:
+    """
+    Load plugins that draw on the screen, for use inside the display render subprocess.
+
+    Deliberately lightweight and separate from discover_and_load_plugins(): it does NOT
+    register event hooks (the subprocess has no bot loop), only instantiates plugins that
+    override on_ui_render and calls on_loaded() best-effort. Returns a fresh list each call.
+    """
+    instances: list = []
+    seen: set = set()
+    for plugin_dir in PLUGIN_DIRS:
+        if not plugin_dir.exists():
+            continue
+        for path in sorted(plugin_dir.glob("*.py")):
+            if path.name.startswith("_"):
+                continue
+            try:
+                spec = importlib.util.spec_from_file_location(f"render_{path.stem}", path)
+                if not (spec and spec.loader):
+                    continue
+                module = importlib.util.module_from_spec(spec)
+                spec.loader.exec_module(module)
+                for attr in vars(module).values():
+                    if (
+                        isinstance(attr, type)
+                        and issubclass(attr, Plugin)
+                        and attr is not Plugin
+                        and attr.on_ui_render is not Plugin.on_ui_render
+                    ):
+                        instance = attr()
+                        if instance.name in seen:
+                            continue
+                        try:
+                            instance.on_loaded()
+                        except Exception as e:
+                            log.debug("render plugin %s on_loaded: %s", instance.name, e)
+                        seen.add(instance.name)
+                        instances.append(instance)
+            except Exception as e:
+                log.error("Failed to load render plugin from %s: %s", path.name, e)
+    return instances

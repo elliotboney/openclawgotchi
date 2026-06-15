@@ -54,6 +54,86 @@ def _save_screen_snapshot(frame):
     except Exception as e:
         print(f"Screen snapshot failed: {e}")
 
+
+class UIContext:
+    """
+    Passed to a plugin's on_ui_render(ui). Pwnagotchi-style additive drawing: plugins
+    place elements at coordinates in the content area. Everything drawn here lands on a
+    separate overlay and is merged non-destructively, so a plugin can ADD ink to blank
+    pixels but can never erase the core face / name / status.
+
+    Helpers: text(), label(), rect(), line(), measure(), blit().
+    Metrics:  width, height, header_h, footer_h, content_top, content_bottom, variant_b.
+    Data:     ctx (read-only dict: mood, status_text, level, battery).
+    Fonts:    font (small UI font), font_big (bubble font).
+    """
+
+    def __init__(self, draw, fonts, metrics, ctx):
+        self.draw = draw
+        self.font = fonts.get("small")
+        self.font_big = fonts.get("bubble")
+        self.width = metrics["width"]
+        self.height = metrics["height"]
+        self.header_h = metrics["header_h"]
+        self.footer_h = metrics["footer_h"]
+        self.content_top = metrics["header_h"] + 2
+        self.content_bottom = metrics["height"] - metrics["footer_h"] - 2
+        self.variant_b = metrics.get("variant_b", False)
+        self.ctx = ctx
+
+    def text(self, position, value, font=None, fill=0):
+        self.draw.text(position, str(value), font=font or self.font, fill=fill)
+
+    def label(self, position, label, value, font=None):
+        """Draw 'label value' (pwnagotchi LabeledValue style)."""
+        self.draw.text(position, f"{label} {value}", font=font or self.font, fill=0)
+
+    def rect(self, box, outline=0, fill=None):
+        self.draw.rectangle(box, outline=outline, fill=fill)
+
+    def line(self, xy, fill=0, width=1):
+        self.draw.line(xy, fill=fill, width=width)
+
+    def measure(self, value, font=None):
+        bbox = self.draw.textbbox((0, 0), str(value), font=font or self.font)
+        return bbox[2] - bbox[0], bbox[3] - bbox[1]
+
+    def blit(self, img, position):
+        """Paste a 1-bit PIL image (icon) onto the overlay."""
+        self.draw._image.paste(img, position)
+
+
+def _apply_plugin_overlays(image, fonts, metrics, ctx):
+    """
+    Let display plugins draw additional elements, merged so they never erase core pixels.
+    Best-effort and isolated: a plugin exception only drops that plugin's overlay.
+    """
+    try:
+        from web.plugins import discover_render_plugins
+    except Exception:
+        return  # web subsystem not importable here — skip silently
+    try:
+        plugins = discover_render_plugins()
+    except Exception as e:
+        print(f"Plugin render discovery failed: {e}")
+        return
+    if not plugins:
+        return
+
+    from PIL import ImageChops, ImageDraw
+    overlay = Image.new("1", image.size, 255)  # white = nothing drawn
+    ui = UIContext(ImageDraw.Draw(overlay), fonts, metrics, ctx)
+    for plugin in plugins:
+        try:
+            plugin.on_ui_render(ui)
+        except Exception as e:
+            print(f"Plugin {getattr(plugin, 'name', '?')} on_ui_render failed: {e}")
+
+    # Non-destructive merge: darker() keeps the black (0) of either layer, so plugin ink
+    # adds to blank areas but can't turn a core-black pixel white.
+    merged = ImageChops.darker(image.convert("L"), overlay.convert("L")).convert("1")
+    image.paste(merged)
+
 # Add drivers to path
 sys.path.append(str(SRC_DIR / "drivers"))
 
@@ -516,6 +596,24 @@ def render_ui(mood="happy", status_text="", fast_mode=True):
             for line in lines:
                 draw_text_with_fallback(draw, (bx + 6, curr_y), line, font=font_bubble, fallback_font=font_emoji_bubble, fill=0)
                 curr_y += line_height
+
+        # Let display plugins append their own elements (additive, can't erase core).
+        try:
+            _plugin_ctx = {
+                "mood": mood,
+                "status_text": status_text,
+                "level": prog if "prog" in dir() else {},
+                "battery": battery_text or None,
+            }
+        except Exception:
+            _plugin_ctx = {"mood": mood, "status_text": status_text}
+        _apply_plugin_overlays(
+            image,
+            {"small": font_ui, "bubble": font_bubble},
+            {"width": WIDTH, "height": HEIGHT, "header_h": HEADER_H,
+             "footer_h": FOOTER_H, "variant_b": EPD_VARIANT_B},
+            _plugin_ctx,
+        )
 
         # Rotate 180 degrees if needed
         # image = image.rotate(180) # Uncomment if you want to test rotation
