@@ -20,4 +20,4 @@ Line format (one bullet per skill — keep it greppable):
 
 ## Skills
 
-- **alexa-cli** 🔊 — Control Amazon Alexa/Echo devices and smart home. [bins: alexacli] install: `go install github.com/buddyh/alexa-cli/cmd/alexa@latest` ⚠️ go-compile on device; prefer a prebuilt ARM binary synced via `sync_skills.sh`
+- **alexa-cli** 🔊 — Control Amazon Alexa/Echo devices and smart home. [bins: alexacli] install: `go install github.com/buddyh/alexa-cli/cmd/alexa@latest` ⚠️ go-compile on device; prefer a prebuilt ARM binary synced via `sync_skills.sh`. NOTE: go produces a binary named `alexa` in `~/go/bin` (not `alexacli`, and not on the service PATH). Symlinked so the documented command works: `sudo ln -s /home/eboney/go/bin/alexa /usr/local/bin/alexacli`
