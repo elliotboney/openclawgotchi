@@ -69,14 +69,12 @@ def parse_skill_frontmatter(content: str) -> dict:
             key = key.strip()
             value = value.strip()
             
-            # Handle JSON metadata (inline `metadata: {…}` or on following lines,
-            # as ClawHub-published skills format it).
-            if key == 'metadata':
+            # Handle JSON metadata
+            if key == 'metadata' and value.startswith('{'):
+                # Find full JSON (might span multiple lines)
                 json_start = yaml_text.find('metadata:')
-                remainder = yaml_text[json_start + len('metadata:'):]
-                brace_pos = remainder.find('{')
-                if brace_pos >= 0:
-                    json_text = remainder[brace_pos:]
+                if json_start >= 0:
+                    json_text = yaml_text[json_start + len('metadata:'):].strip()
                     # Try to parse JSON
                     try:
                         # Handle multi-line JSON
@@ -91,10 +89,7 @@ def parse_skill_frontmatter(content: str) -> dict:
                                     json_end = i + 1
                                     break
                         if json_end > 0:
-                            blob = json_text[:json_end]
-                            # ClawHub manifests use JSON5-ish trailing commas
-                            blob = re.sub(r',(\s*[}\]])', r'\1', blob)
-                            frontmatter['metadata'] = json.loads(blob)
+                            frontmatter['metadata'] = json.loads(json_text[:json_end])
                     except json.JSONDecodeError:
                         pass
             else:
@@ -143,25 +138,10 @@ def check_requirements(req: SkillRequirements) -> tuple[bool, str]:
     return True, ""
 
 
-def _find_skill_md(skill_dir: Path) -> Optional[Path]:
-    """Locate the skill manifest case-insensitively.
-
-    gotchi-skills use `SKILL.md`; OpenClaw/ClawHub skills ship `skill.md`.
-    The Pi's filesystem is case-sensitive, so match either casing.
-    """
-    try:
-        for child in skill_dir.iterdir():
-            if child.is_file() and child.name.lower() == "skill.md":
-                return child
-    except OSError:
-        pass
-    return None
-
-
 def load_skill(skill_dir: Path) -> Optional[Skill]:
     """Load a single skill from directory."""
-    skill_md = _find_skill_md(skill_dir)
-    if skill_md is None:
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.exists():
         return None
     
     try:
@@ -336,8 +316,8 @@ def get_skill_content(skill_name: str) -> str:
     Works for both gotchi-skills and openclaw-skills.
     """
     for skills_dir in SKILLS_DIRS:
-        skill_path = _find_skill_md(skills_dir / skill_name)
-        if skill_path is not None:
+        skill_path = skills_dir / skill_name / "SKILL.md"
+        if skill_path.exists():
             content = skill_path.read_text(encoding='utf-8')
             
             # Add compatibility warning for openclaw-skills
@@ -362,6 +342,6 @@ def list_all_skill_names() -> list[str]:
         if not skills_dir.exists():
             continue
         for item in skills_dir.iterdir():
-            if item.is_dir() and _find_skill_md(item) is not None:
+            if item.is_dir() and (item / "SKILL.md").exists():
                 names.append(item.name)
     return sorted(set(names))
