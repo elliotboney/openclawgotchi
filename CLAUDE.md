@@ -70,6 +70,7 @@ The model emits inline control tags in its text — `FACE: <mood>`, `SAY: <msg>`
 - `src/cron/scheduler.py`: lightweight task scheduler; jobs trigger `run_cron_job` in `main.py`, which calls the LLM with recent chat context and DMs the owner.
 - `src/hooks/runner.py`: event hooks (`startup`/`message`/`command`/`heartbeat`) auto-discovered from `.workspace/hooks/` then `hooks/`; built-ins log to the audit trail.
 - `src/audit_logging/command_logger.py`: append-only audit trail of every action.
+- `src/web/`: optional pwnagotchi-style web UI (off by default, `WEB_UI_ENABLED`). One aiohttp server on the existing event loop (no extra thread) serves the live screen (`gotchi_ui.py` snapshots each frame to `data/screen.png`, served at `/ui`), a status dashboard, plugin pages (`src/web/plugins.py`, `Plugin.on_webhook(path, request)`, discovered from `.workspace/plugins/` then `plugins/`), and token-gated inbound `POST /webhook/<name>` bridged into the hooks system. See `docs/WEB_UI.md`.
 - `src/utils/patch_self.py`: backup-then-write self-modification helper (powers `restore_from_backup`).
 
 ## Conventions & gotchas

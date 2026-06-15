@@ -36,6 +36,24 @@ SRC_DIR = UI_DIR.parent
 PROJECT_DIR = SRC_DIR.parent
 FONT_DIR = PROJECT_DIR / "resources/fonts"
 
+# Where the web UI reads the live screen from (kept in sync with config.SCREEN_PNG_PATH).
+SCREEN_PNG_PATH = PROJECT_DIR / "data" / "screen.png"
+
+
+def _save_screen_snapshot(frame):
+    """Save the current upright frame as a PNG for the web UI. Best-effort, never raises."""
+    try:
+        scale = max(1, int(os.environ.get("WEB_UI_SCREEN_SCALE", "3")))
+        img = frame.convert("L") if frame.mode != "L" else frame
+        if scale > 1:
+            img = img.resize((img.width * scale, img.height * scale), Image.NEAREST)
+        SCREEN_PNG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp = SCREEN_PNG_PATH.with_suffix(".png.tmp")
+        img.save(tmp, format="PNG")
+        os.replace(tmp, SCREEN_PNG_PATH)  # atomic swap so the web server never reads a half-written file
+    except Exception as e:
+        print(f"Screen snapshot failed: {e}")
+
 # Add drivers to path
 sys.path.append(str(SRC_DIR / "drivers"))
 
@@ -502,7 +520,11 @@ def render_ui(mood="happy", status_text="", fast_mode=True):
         # Rotate 180 degrees if needed
         # image = image.rotate(180) # Uncomment if you want to test rotation
         rotated_image = image.rotate(180)
-        
+
+        # Snapshot the upright frame for the web UI (/ui). Best-effort: a failure here must
+        # never block the E-Ink push, and it runs even with no panel attached (dev machines).
+        _save_screen_snapshot(rotated_image)
+
         # Update Display
         #   mono variant: partial-base for fast_mode (no full refresh, lower flicker), full display() otherwise
         #   B variant: only full refresh exists (3-color panel). display() takes (black, red); the red plane

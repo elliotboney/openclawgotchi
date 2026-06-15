@@ -201,6 +201,13 @@ def main():
     
     # Discover and load hooks
     discover_and_load_hooks()
+
+    # Discover web UI plugins (only matters when the web UI is enabled, but loading
+    # them also wires their event hooks — cheap, so do it regardless).
+    from config import WEB_UI_ENABLED
+    if WEB_UI_ENABLED:
+        from web.plugins import discover_and_load_plugins
+        discover_and_load_plugins()
     
     # Show boot screen
     boot_screen()
@@ -240,6 +247,16 @@ def main():
         scheduler.on_job_run(run_cron_job)
         scheduler.start()
         log.info(f"Cron scheduler started ({len(scheduler.jobs)} jobs)")
+
+        # Start web UI (pwnagotchi-style screen mirror + plugin pages + webhooks).
+        # Opt-in; runs on this same event loop. Failure here must not kill the bot.
+        from config import WEB_UI_ENABLED
+        if WEB_UI_ENABLED:
+            try:
+                from web.server import start_web_server
+                application.bot_data["web_runner"] = await start_web_server()
+            except Exception as e:
+                log.error(f"Web UI failed to start: {e}")
         
         # Show online screen (Start sleeping)
         show_face(mood="sleeping", text="Online (Zzz...)")
@@ -248,6 +265,16 @@ def main():
         # Schedule chill mode in 60 seconds
         if application.job_queue:
             application.job_queue.run_once(chill_mode, 60)
+
+    async def post_shutdown(application: Application):
+        """Tear down the web UI runner if it was started."""
+        runner = application.bot_data.get("web_runner")
+        if runner is not None:
+            try:
+                await runner.cleanup()
+                log.info("Web UI stopped")
+            except Exception as e:
+                log.error(f"Web UI cleanup failed: {e}")
     
     # Build application
     # Generous HTTP timeouts — Pi Zero 2W's WiFi can otherwise time out polling
@@ -257,6 +284,7 @@ def main():
         Application.builder()
         .token(BOT_TOKEN)
         .post_init(post_init)
+        .post_shutdown(post_shutdown)
         .read_timeout(60)
         .write_timeout(60)
         .connect_timeout(30)

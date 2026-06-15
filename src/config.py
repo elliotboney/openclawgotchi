@@ -16,6 +16,8 @@ DB_PATH = PROJECT_DIR / "gotchi.db"
 UI_SCRIPT = SRC_DIR / "ui" / "gotchi_ui.py"
 DATA_DIR = PROJECT_DIR / "data"
 CUSTOM_FACES_PATH = DATA_DIR / "custom_faces.json"
+# Snapshot of the current E-Ink frame, written by the UI renderer and served by the web UI (/ui).
+SCREEN_PNG_PATH = DATA_DIR / "screen.png"
 
 # Load local .env for direct runs outside systemd. override=True keeps parity with Pi service fixes.
 load_dotenv(PROJECT_DIR / ".env", override=True)
@@ -79,6 +81,19 @@ LLM_PRESETS = {
         "api_base": OLLAMA_API_BASE
     },
 }
+
+# --- Web UI (pwnagotchi-style screen mirror + plugin pages + inbound webhooks) ---
+# Opt-in: the device has no sandbox, so the server is OFF by default. When enabled,
+# keep it on a trusted LAN / Tailscale. See docs/WEB_UI.md.
+WEB_UI_ENABLED = _env_flag("WEB_UI_ENABLED", False)
+WEB_UI_HOST = os.environ.get("WEB_UI_HOST", "0.0.0.0")  # LAN bind; set 127.0.0.1 for localhost-only
+WEB_UI_PORT = int(os.environ.get("WEB_UI_PORT", "8080"))
+# Optional bearer/cookie token gating the dashboard pages. Empty = no auth (LAN-only convenience).
+WEB_UI_AUTH_TOKEN = os.environ.get("WEB_UI_AUTH_TOKEN", "")
+# Required secret for inbound POST /webhook/<name>. Empty = webhook endpoint disabled.
+WEB_WEBHOOK_TOKEN = os.environ.get("WEB_WEBHOOK_TOKEN", "")
+# Integer upscale factor for the served screen PNG (E-Ink is tiny — 2x/3x is crisper in a browser).
+WEB_UI_SCREEN_SCALE = int(os.environ.get("WEB_UI_SCREEN_SCALE", "3"))
 
 # --- Constants ---
 HEARTBEAT_INTERVAL = 14400  # 4 hours in seconds

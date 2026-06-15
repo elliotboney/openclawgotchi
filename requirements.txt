@@ -12,6 +12,9 @@ requests>=2.31.0
 python-dotenv>=1.0.0
 pypdf>=5.0.0
 
+# Web UI (pwnagotchi-style screen mirror + plugin pages + webhooks; opt-in via WEB_UI_ENABLED)
+aiohttp>=3.9.0
+
 # E-Ink Display
 Pillow>=9.0.0
 smbus2>=0.4.0
