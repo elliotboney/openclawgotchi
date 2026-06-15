@@ -6,8 +6,10 @@
 .workspace/
 
 # External skills (clone separately if needed) — keep the dir, ignore its contents
+# but DO track the curated install catalog (hand-maintained, Pi-safe allowlist).
 openclaw-skills/*
 !openclaw-skills/.gitkeep
+!openclaw-skills/CATALOG.md
 
 # ===================
 # Python

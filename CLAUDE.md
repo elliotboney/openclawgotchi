@@ -58,6 +58,11 @@ The model emits inline control tags in its text — `FACE: <mood>`, `SAY: <msg>`
 ### Skills (gated, OpenClaw-style)
 `src/skills/loader.py` reads `SKILL.md` frontmatter from `gotchi-skills/` (active, takes precedence) and `openclaw-skills/` (reference catalog, read-only, often macOS-only). Skills are **gated** by `SkillRequirements` (required bins, env vars, OS). To save RAM, only skills in `CORE_SKILLS` + `ACTIVE_SKILLS` env are parsed at all. The model discovers skills through the prompt and reads `SKILL.md` on demand via `read_skill`/`search_skills`.
 
+**Skill discovery is 100% local — there is no OpenClaw registry or network sync.** The code mirrors OpenClaw's directory/`SKILL.md` convention but nothing fetches or refreshes skills:
+- `search_skills` is a substring grep over `openclaw-skills/CATALOG.md` (`search_skill_catalog`); `read_skill` is a plain local file read (`get_skill_content`). Eligibility (`check_requirements`) probes the *local machine* via `shutil.which`/`os.environ`/`platform.system()`.
+- **`gotchi-skills/` is git-tracked** → updated by `git pull` / `scripts/auto_update.sh`. **`openclaw-skills/` is gitignored** (`openclaw-skills/*` except `.gitkeep`, "clone separately if needed") → ships **empty** on a fresh clone and is **never** updated by pull, cron, heartbeat, or `sync.sh`. The only way new OpenClaw skills land is a manual `git clone` into that dir.
+- Consequence on a fresh install: `openclaw-skills/CATALOG.md` may not exist, so `search_skills` returns "Skill catalog not found." (Deferred: optionally auto-clone real OpenClaw skills in `setup.sh`, or generate `CATALOG.md` from whatever's present so search degrades gracefully.)
+
 ### Memory: three layers
 1. **SQLite** (`gotchi.db`, `src/db/memory.py`): `messages` (rolling history, auto-pruned to ~50/chat), `facts` (FTS5 full-text long-term memory), `feedback_events`, `conversation_state`, `user_info`, `pending_tasks`. Stats/XP in `src/db/stats.py`.
 2. **Daily logs** (`.workspace/memory/YYYY-MM-DD.md`) via `src/memory/` (`summarize.py`, `flush.py`, `knowledge.py`).
