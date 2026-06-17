@@ -23,8 +23,8 @@ case "$1" in
         for d in "${SKILL_DIRS[@]}"; do
             [ -d "$d" ] && rsync -avz --delete "${EXCLUDES[@]}" "./$d/" "$REMOTE:$DEST$d/" || exit 1
         done
-        echo "🔄 Restarting bot service (skills load at startup)..."
-        ssh -o StrictHostKeyChecking=no $REMOTE "sudo -n systemctl restart gotchi-bot.service" || exit 1
+        # echo "🔄 Restarting bot service (skills load at startup)..."
+        # ssh -o StrictHostKeyChecking=no $REMOTE "sudo -n systemctl restart gotchi-bot.service" || exit 1
         echo "✅ Done!"
         ;;
     down)
