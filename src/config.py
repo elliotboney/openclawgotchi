@@ -44,6 +44,7 @@ OPENAI_VISION_MAX_IMAGE_MB = int(os.environ.get("OPENAI_VISION_MAX_IMAGE_MB", "1
 SYNCTHING_API_URL = os.environ.get("SYNCTHING_API_URL", "http://127.0.0.1:8384/rest/db/scan")
 SYNCTHING_API_KEY = os.environ.get("SYNCTHING_API_KEY", "")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:14b")
+OLLAMA_VISION_MODEL = os.environ.get("OLLAMA_VISION_MODEL", "llava")
 OLLAMA_API_BASE = os.environ.get("OLLAMA_API_BASE", "http://ollama-server:11434")
 BOT_LANGUAGE = os.environ.get("BOT_LANGUAGE", "en")  # Default response language
 GROUP_CHAT_ID = int(os.environ.get("GROUP_CHAT_ID", "0"))  # Optional group for heartbeat

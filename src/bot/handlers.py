@@ -38,6 +38,8 @@ from config import (
     OPENAI_API_KEY,
     OPENAI_VISION_MODEL,
     OPENAI_VISION_MAX_IMAGE_MB,
+    OLLAMA_API_BASE,
+    OLLAMA_VISION_MODEL,
     SYNCTHING_API_KEY,
     SYNCTHING_API_URL,
 )
@@ -217,6 +219,47 @@ async def analyze_image_with_openai(file_path: str, prompt: str, mime_type: str 
         return f"Error: Vision analysis failed: {e}"
 
 
+async def analyze_image_with_ollama(file_path: str, prompt: str, mime_type: str = "image/jpeg") -> str:
+    """Analyze an image using an Ollama vision model (OpenAI-compatible API)."""
+    img_b64 = image_to_base64(file_path)
+
+    def _call_ollama() -> str:
+        import openai
+        client = openai.OpenAI(api_key="ollama", base_url=f"{OLLAMA_API_BASE}/v1")
+        response = client.chat.completions.create(
+            model=OLLAMA_VISION_MODEL,
+            messages=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": prompt},
+                        {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{img_b64}"}},
+                    ],
+                }
+            ],
+        )
+        return (response.choices[0].message.content or "").strip()
+
+    try:
+        return await asyncio.to_thread(_call_ollama)
+    except Exception as e:
+        log.error(f"Ollama vision failed: {e}")
+        return f"Error: Ollama vision failed: {e}"
+
+
+def _use_ollama_vision() -> bool:
+    """Route to Ollama vision if no OpenAI key or router is in local/lite-ollama mode."""
+    if not OPENAI_API_KEY:
+        return True
+    try:
+        router = get_router()
+        if router.force_lite and getattr(router.litellm, "model", "").startswith("ollama"):
+            return True
+    except Exception:
+        pass
+    return False
+
+
 async def process_image_file(
     *,
     local_file_path: str,
@@ -235,8 +278,12 @@ async def process_image_file(
         "Format: TITLE: [your title]\nSUMMARY: [your analysis]"
     )
 
-    response = await analyze_image_with_openai(local_file_path, vision_prompt, mime_type)
-    connector = "openai"
+    if _use_ollama_vision():
+        response = await analyze_image_with_ollama(local_file_path, vision_prompt, mime_type)
+        connector = f"ollama/{OLLAMA_VISION_MODEL}"
+    else:
+        response = await analyze_image_with_openai(local_file_path, vision_prompt, mime_type)
+        connector = "openai"
     if response.startswith("Error:"):
         raise RuntimeError(response)
 
@@ -716,7 +763,7 @@ async def cmd_pro(update: Update, context: ContextTypes.DEFAULT_TYPE):
         requested = "pro"
     elif cmd_text == "/mode" and context.args:
         arg = context.args[0].lower()
-        if arg in ("lite", "pro"):
+        if arg in ("lite", "pro", "local"):
             requested = arg
 
     if requested == "lite":
@@ -727,10 +774,18 @@ async def cmd_pro(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if router.force_lite:
             router.force_lite = False
         is_lite = False
+    elif requested == "local":
+        from src.config import LLM_PRESETS, OLLAMA_API_BASE
+        preset = LLM_PRESETS["ollama"]
+        router.litellm.set_model(preset["model"], preset["api_base"])
+        router.force_lite = True
+        show_face("cool", "SAY: Going local! | MODE: L | STATUS: Ollama")
+        await update.message.reply_text(f"🦙 Mode: Local (Ollama)\nModel: {preset['model']}\nBase: {preset['api_base']}")
+        return
     else:
         # Default: toggle for /mode (no args) or legacy usage
         is_lite = router.toggle_lite_mode()
-    
+
     if is_lite:
         show_face("cool", "SAY: Fast & Free! | MODE: L | STATUS: Lite Mode")
         current = router.litellm.model.split("/")[-1] if getattr(router.litellm, "model", None) else "LiteLLM"
